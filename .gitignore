@@ -1,0 +1,28 @@
+# Secrets / environment
+.env
+.env.*
+!.env.sample
+
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/main
+/server
+/app
+
+# Test / coverage output
+*.test
+*.out
+coverage.txt
+
+# Go workspace / vendor (uncomment if you don't commit vendor/)
+# vendor/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log

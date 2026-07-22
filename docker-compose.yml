@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: go-server-mobile
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: ep-muddy-flower-ao2hh56e-pooler.c-2.ap-southeast-1.aws.neon.tech
+      DB_PORT: 5432
+      DB_USER: neondb_owner
+      DB_PASSWORD: npg_kAL7Zfazi1dK
+      DB_NAME: neondb
+      DB_SSLMODE: require
+      PORT: 8080
+      GIN_MODE: debug
+      JWT_KEY: eeebe429e025cdd129f12a30433a478b
+      JWT_NAME: cocoa_mobile_jwt
+      JWT_ACCESS_TOKEN_EXPIRATION: 36000000
+      JWT_REFRESH_TOKEN_EXPIRATION: 86400000
