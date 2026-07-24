@@ -129,7 +129,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       # - name: Run JS stub test
       #   run: node --test tests/unit/user.service.test.js
