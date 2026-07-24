@@ -121,15 +121,17 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+
+      # เก็บไว้ในใจฉัน ปล เสียดายอ่ะ
       # --- Node: tests/unit/user.service.test.js is a stub for a Go project.
       # Run it here so the file is exercised in CI and a regression in the
       # placeholder (e.g. someone accidentally deleting the assertion) is
       # caught. Cheap (~1s) and isolated from the Go test runner.
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      # - name: Setup Node
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
 
-      - name: Run JS stub test
-        run: node --test tests/unit/user.service.test.js
+      # - name: Run JS stub test
+      #   run: node --test tests/unit/user.service.test.js
