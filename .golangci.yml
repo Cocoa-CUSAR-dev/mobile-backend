@@ -10,10 +10,6 @@ run:
   # CI timeout; default 1m is tight for a fresh build with module download.
   timeout: 5m
 
-  # Skip the JS stub directory — it's a placeholder, not Go code.
-  skip-dirs:
-    - tests
-
 linters:
   # Default set is fine; explicit list kept short so future maintainers
   # know exactly what's enforced without reading golangci-lint internals.
