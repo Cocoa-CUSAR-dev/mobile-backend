@@ -38,6 +38,9 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # Install from source with the runner's Go toolchain to avoid
+          # release binaries built with an older Go version than go.mod.
+          install-mode: goinstall
           # Only fail the build on issues in production code; the
           # internal/handlers/*_test.go files are pre-DB smoke tests
           # that intentionally panic-recover, which would otherwise
