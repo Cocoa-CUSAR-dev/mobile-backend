@@ -12,6 +12,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # --- Lint: fast static analysis. Runs in parallel with test so a
   # regression in style doesn't block the test feedback (and vice versa).
