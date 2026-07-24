@@ -82,6 +82,28 @@ func _parseDate(dateStr string) time.Time {
 	return t
 }
 
+// buildWKT turns a slice of {lng, lat} points into a PostGIS WKT string.
+//   - 0 or 1 points: empty string (caller should skip the insert; a polygon
+//     needs at least 3 vertices, and a single point is handled separately
+//     by the farm handler as POINT, not here).
+//   - 2+ points: POLYGON with the first point repeated as the closing vertex,
+//     as required by the WKT spec.
+//
+// Keeping this in one place means the closing-vertex rule is testable in
+// isolation instead of buried inside RegisterFarm/RegisterPlot.
+func buildWKT(points []map[string]float64) string {
+	if len(points) < 2 {
+		return ""
+	}
+	coords := make([]string, 0, len(points)+1)
+	for _, p := range points {
+		coords = append(coords, fmt.Sprintf("%f %f", p["lng"], p["lat"]))
+	}
+	// Close the ring: last coord must equal the first.
+	coords = append(coords, fmt.Sprintf("%f %f", points[0]["lng"], points[0]["lat"]))
+	return fmt.Sprintf("POLYGON((%s))", strings.Join(coords, ","))
+}
+
 func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 	// 1. ดึง user_id จาก context
 	val, exists := c.Get("userID")
@@ -216,20 +238,13 @@ func (h *AgricultureHandler) RegisterFarm(c *gin.Context) {
 		if len(req.GIS) == 1 {
 			// กรณีส่งมาจุดเดียว -> POINT
 			wkt = fmt.Sprintf("POINT(%f %f)", req.GIS[0]["lng"], req.GIS[0]["lat"])
-		} else if len(req.GIS) > 2 {
-			// กรณีส่งมาหลายจุด -> POLYGON (ตัวสุดท้ายต้องปิดที่ตัวแรก)
-			var coords []string
-			for _, p := range req.GIS {
-				coords = append(coords, fmt.Sprintf("%f %f", p["lng"], p["lat"]))
-			}
-			// ปิดลูป Polygon
-			coords = append(coords, fmt.Sprintf("%f %f", req.GIS[0]["lng"], req.GIS[0]["lat"]))
-			wkt = fmt.Sprintf("POLYGON((%s))", strings.Join(coords, ","))
+		} else {
+			wkt = buildWKT(req.GIS)
 		}
 
 		if wkt != "" {
 			query := `
-				INSERT INTO "storage".geo (uploaded_by, geom, code, source_type, created_at) 
+				INSERT INTO "storage".geo (uploaded_by, geom, code, source_type, created_at)
 				VALUES (?, ST_GeomFromText(?, 4326), ?, ?, ?)`
 
 			if err := tx.Exec(query, userID, wkt, farmID.String(), "farm", time.Now()).Error; err != nil {
@@ -289,16 +304,8 @@ func (h *AgricultureHandler) RegisterPlot(c *gin.Context) {
 	}
 
 	// 2. บันทึก GIS (Polygon สำหรับ Plot)
-	if len(req.GIS) > 2 {
-		// สร้าง Polygon WKT: POLYGON((lng1 lat1, lng2 lat2, ..., lng1 lat1))
-		var coords []string
-		for _, p := range req.GIS {
-			coords = append(coords, fmt.Sprintf("%f %f", p["lng"], p["lat"]))
-		}
-		// ปิด Loop Polygon (ตัวสุดท้ายต้องเหมือนตัวแรก)
-		coords = append(coords, fmt.Sprintf("%f %f", req.GIS[0]["lng"], req.GIS[0]["lat"]))
-		wkt := fmt.Sprintf("POLYGON((%s))", strings.Join(coords, ","))
-
+	if len(req.GIS) >= 2 {
+		wkt := buildWKT(req.GIS)
 		query := "INSERT INTO \"storage\".geo (uploaded_by, geom, code, source_type, area_sq_m, created_at) VALUES (?, ST_GeomFromText(?, 4326), ?, ?, ?, ?)"
 		if err := tx.Exec(query, userID, wkt, plotID.String(), "plot", req.AreaSqM, time.Now()).Error; err != nil {
 			tx.Rollback()
