@@ -298,28 +298,35 @@ func TestSubmitFormRequest_JSONRoundTrip(t *testing.T) {
 
 func TestSubmitFormRequest_RequiredFields(t *testing.T) {
 	// Each field independently should be rejected when missing.
+	// Note: json.Unmarshal alone does NOT enforce binding:"required" —
+	// that's a gin tag, applied at ShouldBindJSON time. This test
+	// just confirms the body parses without error and the missing
+	// field is left at its zero value, so the binding step will
+	// (correctly) reject it. The actual 400 response is asserted in
+	// TestSubmitTask_MissingTaskID / MissingAnswer / EmptyBody above.
 	cases := []struct {
-		name string
-		body string
+		name        string
+		body        string
+		wantEmptyID bool
+		wantNilAns  bool
 	}{
-		{"missing task_id", `{"answer":{"q1":"a"}}`},
-		{"missing answer", `{"task_id":"t1"}`},
-		{"both missing", `{}`},
+		{"missing task_id", `{"answer":{"q1":"a"}}`, true, false},
+		{"missing answer", `{"task_id":"t1"}`, false, true},
+		{"both missing", `{}`, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var req SubmitFormRequest
-			if err := json.Unmarshal([]byte(tc.body), &req); err == nil {
-				// Unmarshal alone won't catch binding:"required" — that's
-				// a gin tag enforced by ShouldBindJSON. We assert the
-				// field is empty so the binding step would reject it.
-				if req.TaskID == "" && req.Answer == nil {
-					return // expected: both fields empty
-				}
-				// If we got here, at least one required field has a value
-				// that gin would still accept; flag it as suspicious.
-				t.Logf("unmarshal succeeded (task_id=%q, answer=%v); binding:required will reject anyway",
-					req.TaskID, req.Answer)
+			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if (req.TaskID == "") != tc.wantEmptyID {
+				t.Errorf("TaskID empty: want %v, got %v (value=%q)",
+					tc.wantEmptyID, req.TaskID == "", req.TaskID)
+			}
+			if (req.Answer == nil) != tc.wantNilAns {
+				t.Errorf("Answer nil: want %v, got %v (value=%v)",
+					tc.wantNilAns, req.Answer == nil, req.Answer)
 			}
 		})
 	}

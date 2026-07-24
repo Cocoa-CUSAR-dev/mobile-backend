@@ -105,9 +105,15 @@ func TestGetConstants_LocationMissingBothFiltersReturns400(t *testing.T) {
 	// The 'location' case has its own validation: at least one of
 	// zip_code / subdistrict_id must be present. This runs BEFORE the DB
 	// hit, so it must 400 with the Thai error string.
+	//
+	// Route is /constants/:key (not /constants/location) because the
+	// production handler reads c.Param("key") — gin only binds :key
+	// when the path has a wildcard segment. A fixed /location route
+	// would make c.Param("key") return "" and the switch would fall
+	// through to the default 404.
 	h := &RefHandler{}
 	r := gin.New()
-	r.GET("/constants/location", func(c *gin.Context) {
+	r.GET("/constants/:key", func(c *gin.Context) {
 		c.Set("userID", uuid.New())
 		h.GetConstants(c)
 	})
@@ -133,7 +139,7 @@ func TestGetConstants_LocationWithZipCodeReachesDB(t *testing.T) {
 	// zip_code OR subdistrict_id, not AND.
 	h := &RefHandler{}
 	r := gin.New()
-	r.GET("/constants/location", func(c *gin.Context) {
+	r.GET("/constants/:key", func(c *gin.Context) {
 		c.Set("userID", uuid.New())
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -157,7 +163,7 @@ func TestGetConstants_LocationWithSubdistrictIDReachesDB(t *testing.T) {
 	// subdistrict_id alone (no zip_code) must also pass validation.
 	h := &RefHandler{}
 	r := gin.New()
-	r.GET("/constants/location", func(c *gin.Context) {
+	r.GET("/constants/:key", func(c *gin.Context) {
 		c.Set("userID", uuid.New())
 		defer func() {
 			if rec := recover(); rec != nil {

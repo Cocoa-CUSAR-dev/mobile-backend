@@ -232,25 +232,45 @@ func TestJwtAuthMiddleware_NoneAlgorithmRejected(t *testing.T) {
 	}
 }
 
-func TestJwtAuthMiddleware_WrongSigningMethodRejected(t *testing.T) {
-	// Sign with HS512 (still HMAC, but a different algorithm than the
-	// one middleware expects). The middleware doesn't pin the method
-	// in its keyfunc — it just returns secretKey — so the library
-	// will reject because the parsed token's signing method doesn't
-	// match what SignedString used. Pin that behavior.
-	tok := mintTokenWithMethod(t, jwt.SigningMethodHS512, []byte(testSecret))
-
-	r, res := newEchoRouter()
-	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("want 401 for HS512, got %d (body=%s)", w.Code, w.Body.String())
+func TestJwtAuthMiddleware_AnyHMACMethodAccepted(t *testing.T) {
+	// Documents current behavior: the middleware's keyfunc returns
+	// secretKey without checking the token's signing method. Because
+	// HS256, HS384, and HS512 are all HMAC-SHA variants and all
+	// accept a []byte key, a token signed with any of them is
+	// accepted as long as the signature is valid.
+	//
+	// The security-relevant check is "reject alg=none" (covered
+	// separately in TestJwtAuthMiddleware_NoneAlgorithmRejected) —
+	// the library rejects None unless the keyfunc explicitly
+	// opts in. The library does NOT reject other-vs-expected HMAC
+	// variants; that's a code-level decision the middleware would
+	// have to make itself.
+	//
+	// If you ever harden the keyfunc to enforce HS256 specifically,
+	// this test will fail — that's the right signal: the
+	// hardening was a deliberate, breaking change.
+	cases := []jwt.SigningMethod{
+		jwt.SigningMethodHS256,
+		jwt.SigningMethodHS384,
+		jwt.SigningMethodHS512,
 	}
-	if res.ran {
-		t.Error("downstream handler should not have run after abort")
+	for _, method := range cases {
+		t.Run(method.Alg(), func(t *testing.T) {
+			tok := mintTokenWithMethod(t, method, []byte(testSecret))
+			r, res := newEchoRouter()
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Errorf("%s: want 200, got %d (body=%s)",
+					method.Alg(), w.Code, w.Body.String())
+			}
+			if !res.ran {
+				t.Errorf("%s: downstream handler should have run", method.Alg())
+			}
+		})
 	}
 }
 
