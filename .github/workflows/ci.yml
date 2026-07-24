@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 1-cicd-unit-testing]
+  pull_request:
+    branches: [main, 1-cicd-unit-testing]
+
+# Cancel in-progress runs for the same branch/ref so a fast follow-up
+# commit doesn't queue behind a slow one. Saves CI minutes on rapid fixes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --- Lint: fast static analysis. Runs in parallel with test so a
+  # regression in style doesn't block the test feedback (and vice versa).
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: go.sum
+
+      # Pinned to a recent stable golangci-lint version that supports Go 1.26.
+      # Bump manually when upgrading; v2 is GA as of 2025.
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          # Install from source with the runner's Go toolchain to avoid
+          # release binaries built with an older Go version than go.mod.
+          install-mode: goinstall
+          # Only fail the build on issues in production code; the
+          # internal/handlers/*_test.go files are pre-DB smoke tests
+          # that intentionally panic-recover, which would otherwise
+          # surface as `errcheck` warnings.
+          only-new-issues: true
+
+  # --- Test: vet, build, race-enabled test run with coverage.
+  test:
+    name: Test (go vet, build, race + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: go.sum
+
+      # go mod verify: confirms go.sum matches go.mod. Catches the
+      # case where someone edits one without regenerating the other
+      # (a sneaky source of CI-only failures when go mod tidy hasn't
+      # been run locally).
+      - name: Verify modules
+        run: go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      # -race: detects data races in goroutine-using code. The handler
+      # test suite itself doesn't spin goroutines, but the production
+      # code uses gin contexts across middleware, and the race detector
+      # is essentially free on this size of project (~few seconds).
+      #
+      # -coverprofile: produces coverage.out for the artifact upload.
+      # -covermode=atomic is required for -race to be compatible with
+      # coverage; without it, `go test -race -coverprofile` errors.
+      #
+      # ./... picks up internal/handlers tests + the JS stub doesn't
+      # run here (handled below).
+      - name: go test (race + coverage)
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./... -v
+
+      - name: Coverage summary
+        # Print a one-line summary in the CI log so reviewers see the
+        # number without downloading the artifact. func coverage is more
+        # meaningful than stmt coverage for a handlers-only test suite.
+        #
+        # Wrapped in ::group:: so the GitHub Actions UI renders it as
+        # a collapsible section in the run log — easier to spot than a
+        # raw line buried in the test output. ::endgroup:: closes it.
+        #
+        # First line is the project total; the per-package breakdown
+        # is more useful for spotting which layer is under-tested
+        # (handlers, middleware, database, models).
+        run: |
+          echo "::group::Coverage report"
+          echo "Total:"
+          go tool cover -func=coverage.out | tail -1
+          echo ""
+          echo "Per-package (statement coverage):"
+          go tool cover -func=coverage.out \
+            | awk '/^go-server-mobile\// {print "  " $0}' \
+            | sort
+          echo "::endgroup::"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 14
+          if-no-files-found: error
+
+      # --- Node: tests/unit/user.service.test.js is a stub for a Go project.
+      # Run it here so the file is exercised in CI and a regression in the
+      # placeholder (e.g. someone accidentally deleting the assertion) is
+      # caught. Cheap (~1s) and isolated from the Go test runner.
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run JS stub test
+        run: node --test tests/unit/user.service.test.js
