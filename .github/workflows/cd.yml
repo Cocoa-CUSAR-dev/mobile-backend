@@ -2,8 +2,7 @@ name: CD
 
 on:
   push:
-    branches:
-      - main
+    branches: '**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -18,7 +17,7 @@ permissions:
 
 jobs:
   test:
-    name: Verify before deploy
+    name: Automated tests before deploy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,8 +39,16 @@ jobs:
       - name: go build
         run: go build ./...
 
-      - name: go test
-        run: go test ./... -v
+      - name: go test (race + coverage)
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./... -v
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cd-coverage-report
+          path: coverage.out
+          retention-days: 14
+          if-no-files-found: error
 
   build-and-push:
     name: Build and push image
