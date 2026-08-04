@@ -8,7 +8,7 @@ import (
 
 type UserAccount struct {
 	UserID                  uuid.UUID `gorm:"type:uuid;primaryKey;column:user_id;default:gen_random_uuid()" json:"user_id"`
-	Username                string    `gorm:"column:username;not null;unique" json:"username"`
+	Username                *string   `gorm:"column:username" json:"username"`
 	PasswordHash            *string   `gorm:"column:password_hash" json:"-"`
 	IsPasswordReset         *bool     `gorm:"column:is_password_reset;default:false" json:"is_password_reset"`
 	IsRequiresPasswordReset *bool     `gorm:"column:is_requires_password_reset;default:false" json:"is_requires_password_reset"`
