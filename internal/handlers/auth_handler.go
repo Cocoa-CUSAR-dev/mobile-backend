@@ -90,11 +90,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// ---------------------------------------
 
 	// 4. สร้าง JWT Token (ส่ง userID และ roles เข้าไปด้วยเพื่อให้ Middleware ตรวจสอบ Permission ได้)
-	username := ""
-	if user.Username != nil {
-		username = *user.Username
-	}
-	token, maxAge, err := GenerateToken(user.UserID, username)
+	token, maxAge, err := GenerateToken(user.UserID, user.Username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
 		return
@@ -136,7 +132,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 3. บันทึกลง Database
 	passwordHash := string(hashedPassword)
 	newUser := models.UserAccount{
-		Username:     &req.Username,
+		Username:     req.Username,
 		PasswordHash: &passwordHash,
 	}
 
