@@ -7,7 +7,9 @@ import (
 	"go-server-mobile/internal/middleware"
 	"net/http"
 	"os"
+	"strings"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -36,6 +38,20 @@ func main() {
 
 	// 4. Setup Router
 	r := gin.Default()
+
+	// CORS: only needed for browser-based callers (e.g. a Flutter web build).
+	// Native mobile HTTP clients ignore CORS entirely, so this was invisible
+	// until something running in a browser tried to call this API directly.
+	var corsOrigins []string
+	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
+		corsOrigins = strings.Split(raw, ",")
+	}
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     corsOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+		AllowHeaders:     []string{"Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
 
 	// --- Public Routes ---
 	public := r.Group("/public")
