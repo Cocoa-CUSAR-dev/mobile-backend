@@ -32,9 +32,8 @@ func TestMain(m *testing.M) {
 // the middleware injected into the context. This lets us assert both
 // "did the request get through" and "did the userID flow correctly".
 type echoResult struct {
-	ran     bool
-	userID  string
-	rawBody string
+	ran    bool
+	userID string
 }
 
 func newEchoRouter() (*gin.Engine, *echoResult) {
