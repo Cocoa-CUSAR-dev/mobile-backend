@@ -17,11 +17,6 @@ type ChemBioRes struct {
 	Description string `json:"description"`
 }
 
-type CocoaBeanGradeRes struct {
-	CocoaBeanGradeID   string `json:"cocoa_bean_grade_id"`
-	CocoaBeanGradeName string `json:"cocoa_bean_grade_name"`
-}
-
 type FarmActivityTypeRes struct {
 	FarmActivityTypeID   string `json:"farm_activity_type_id"`
 	FarmActivityTypeName string `json:"farm_activity_type_name"`
