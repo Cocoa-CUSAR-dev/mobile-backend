@@ -1,0 +1,37 @@
+# golangci-lint configuration for go-server-mobile.
+#
+# Defaults are intentionally minimal — this file exists so the CI pin
+# (`golangci-lint-action@v6` with `version: v1.62.2`) uses a known-good
+# linter set rather than whatever is enabled by default at that version.
+# Add linters here as the codebase grows; remove any that generate
+# noise on the handlers test suite.
+
+run:
+  # CI timeout; default 1m is tight for a fresh build with module download.
+  timeout: 5m
+
+linters:
+  # Default set is fine; explicit list kept short so future maintainers
+  # know exactly what's enforced without reading golangci-lint internals.
+  enable:
+    - errcheck    # unchecked errors
+    - govet       # standard go vet
+    - ineffassign # unused assignments
+    - staticcheck # bug-finding static analysis
+    - unused      # unused identifiers
+
+  disable:
+    # The handler tests intentionally panic-recover to assert current
+    # behavior. revive's `var-naming` flags short variable names; we
+    # have legitimate uses of `h`, `c`, `w` etc. that aren't worth
+    # renaming.
+    - revive
+
+issues:
+  # Don't fail on issues in test files for the panic-recovery pattern.
+  # Production code (`internal/handlers/*.go` excluding _test.go) is
+  # always checked.
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

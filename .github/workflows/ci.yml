@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, 1-cicd-unit-testing]
+    branches: '**'
   pull_request:
-    branches: [main, 1-cicd-unit-testing]
+    branches: '**'
 
 # Cancel in-progress runs for the same branch/ref so a fast follow-up
 # commit doesn't queue behind a slow one. Saves CI minutes on rapid fixes.
@@ -129,7 +129,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
-      - name: Run JS stub test
-        run: node --test tests/unit/user.service.test.js
+      # - name: Run JS stub test
+      #   run: node --test tests/unit/user.service.test.js

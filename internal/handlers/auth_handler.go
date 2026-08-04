@@ -20,8 +20,13 @@ type AuthHandler struct {
 
 func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
-	expirationMs, _ := strconv.Atoi(os.Getenv("JWT_ACCESS_TOKEN_EXPIRATION"))
-	expirationTime := time.Duration(expirationMs) * time.Millisecond
+	// JWT_ACCESS_TOKEN_EXPIRATION is in SECONDS (matches the env var name
+	// and the convention used in docker-compose.yml / .env.sample).
+	// The variable was previously named `expirationMs` and interpreted
+	// as milliseconds, which made 3600 mean ~3.6 seconds — almost
+	// certainly a bug. Reads now match what the env var name suggests.
+	expirationSec, _ := strconv.Atoi(os.Getenv("JWT_ACCESS_TOKEN_EXPIRATION"))
+	expirationTime := time.Duration(expirationSec) * time.Second
 
 	claims := jwt.MapClaims{
 		"user_id": userID.String(), // ฝัง ID ลงใน Token
@@ -33,7 +38,7 @@ func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(secretKey)
 
-	return tokenString, int(expirationTime.Seconds()), err
+	return tokenString, expirationSec, err
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
