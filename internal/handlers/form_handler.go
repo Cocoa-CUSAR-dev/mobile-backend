@@ -129,13 +129,17 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 				WHEN r.response_id IS NOT NULL THEN 'COMPLETED'
 				WHEN NOW() > t.close_at THEN 'OVERDUE'
 				ELSE 'NOT_STARTED'
-			END as status
+			END AS status
 		FROM form.task t
-		LEFT JOIN form.task_form tf ON t.task_id = tf.task_id
+		LEFT JOIN form.task_form tf 
+			ON t.task_id = tf.task_id
 		LEFT JOIN form.response r 
 			ON t.task_id = r.task_log_id 
 			AND r.user_id = ?
-		WHERE (? = '' OR DATE(t.open_at) = ?)
+		WHERE (
+			NULLIF(?, '')::date IS NULL
+			OR DATE(t.open_at) = NULLIF(?, '')::date
+		)
 		ORDER BY t.open_at DESC
 	`
 
