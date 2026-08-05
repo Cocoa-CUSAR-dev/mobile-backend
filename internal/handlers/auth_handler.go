@@ -66,7 +66,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 3. ตรวจสอบ Password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+	if user.PasswordHash == nil || bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)) != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
 		return
 	}
@@ -135,9 +135,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	// 3. บันทึกลง Database
+	passwordHash := string(hashedPassword)
 	newUser := models.UserAccount{
 		Username:     req.Username,
-		PasswordHash: string(hashedPassword),
+		PasswordHash: &passwordHash,
 	}
 
 	if err := h.DB.Create(&newUser).Error; err != nil {
