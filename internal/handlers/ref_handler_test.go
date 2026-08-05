@@ -195,7 +195,6 @@ func TestGetConstants_KnownKeyReachesDB(t *testing.T) {
 		"air_exposure_type",
 		"breed",
 		"chem_bio",
-		"cocoa_brean_grade", // sic: source has this misspelling; do not "fix" it
 		"drying_facility",
 		"farm_activity_type",
 		"fertilizer_stage",

@@ -36,10 +36,6 @@ func (h *RefHandler) GetConstants(c *gin.Context) {
 		var res []models.ChemBioRes
 		err = h.DB.Table("ref.chem_bio_constant").Order("1 ASC").Find(&res).Error
 		data = res
-	case "cocoa_brean_grade":
-		var res []models.CocoaBeanGradeRes
-		err = h.DB.Table("ref.cocoa_bean_grade_constant").Order("1 ASC").Find(&res).Error
-		data = res
 	case "drying_facility":
 		var res []models.DryingFacilityRes
 		err = h.DB.Table("ref.drying_facility_constant").Order("1 ASC").Find(&res).Error
