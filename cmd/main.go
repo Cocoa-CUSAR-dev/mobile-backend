@@ -40,8 +40,8 @@ func main() {
 	r := gin.Default()
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
-	r.StaticFile("/liff-test", "./static/liff-test/index.html")
-	r.StaticFile("/liff-link", "./static/liff-test/link.html")
+	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
+	// r.StaticFile("/liff-link", "./static/liff-test/link.html")
 
 	// CORS: only needed for browser-based callers (e.g. a Flutter web build).
 	// Native mobile HTTP clients ignore CORS entirely, so this was invisible
