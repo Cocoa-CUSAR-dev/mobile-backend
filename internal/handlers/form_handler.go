@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,91 @@ type FormHandler struct {
 // (one-time per option field per process lifetime, see BE-5) — once warm,
 // real calls land in ~1-2s.
 var webBackendClient = &http.Client{Timeout: 30 * time.Second}
+
+// standaloneHandlerTables lists the handlers whose destination table has its
+// own generated primary key, so an answer payload can be dissected into an
+// INSERT without needing a parent row from outside the submission. The other
+// 5 live handlers (farm_activity_fertilizer, farm_activity_chemical,
+// harvest_grade_detail, fermentation_batch, drying_batch) are child rows that
+// need a parent ID the submission doesn't carry — see task-dissection-design.md.
+var standaloneHandlerTables = map[string]string{
+	"farm_activity":            "agriculture.farm_activity",
+	"processing_record":        "processing.processing_record",
+	"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
+	"harvest":                  "collection.harvest",
+	"batch":                    "processing.batch",
+}
+
+// columnsCache holds table (schema.table) -> set of live column names.
+// In-process only; cleared on deploy/restart, which is fine since columns
+// only change via a Flyway migration.
+var columnsCache sync.Map
+
+// liveColumns returns the real column names for a schema-qualified table,
+// used as an allowlist so farmer-controlled answer keys can never target a
+// column that doesn't actually exist.
+func liveColumns(tx *gorm.DB, table string) (map[string]bool, error) {
+	if cached, ok := columnsCache.Load(table); ok {
+		return cached.(map[string]bool), nil
+	}
+
+	parts := strings.SplitN(table, ".", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("table %q must be schema-qualified", table)
+	}
+
+	var names []string
+	err := tx.Raw(
+		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?`,
+		parts[0], parts[1],
+	).Scan(&names).Error
+	if err != nil {
+		return nil, err
+	}
+
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	columnsCache.Store(table, set)
+	return set, nil
+}
+
+// filterKnownColumns keeps only the answer keys that name a real column on
+// the destination table. This is the safety boundary: without it, answer's
+// keys would go straight into a dynamic INSERT built from farmer-controlled
+// JSON.
+func filterKnownColumns(answer map[string]interface{}, columns map[string]bool) map[string]interface{} {
+	insertMap := make(map[string]interface{}, len(answer))
+	for field, value := range answer {
+		if columns[field] {
+			insertMap[field] = value
+		}
+	}
+	return insertMap
+}
+
+// dissectAnswer inserts the parts of answer that match real destination
+// columns for handler into that handler's table, inside the caller's
+// transaction. Only valid for handlers in standaloneHandlerTables.
+func dissectAnswer(tx *gorm.DB, handler string, answer map[string]interface{}) error {
+	table, ok := standaloneHandlerTables[handler]
+	if !ok {
+		return fmt.Errorf("handler %q not yet supported for dissection", handler)
+	}
+
+	columns, err := liveColumns(tx, table)
+	if err != nil {
+		return err
+	}
+
+	insertMap := filterKnownColumns(answer, columns)
+	if len(insertMap) == 0 {
+		return fmt.Errorf("ไม่มีคำตอบที่ตรงกับคอลัมน์ของ handler %q", handler)
+	}
+
+	return tx.Table(table).Create(insertMap).Error
+}
 
 // ปรับปรุง Struct เพื่อรับ taskId ใน Payload
 type SubmitFormRequest struct {
@@ -51,13 +138,17 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 				WHEN r.response_id IS NOT NULL THEN 'COMPLETED'
 				WHEN NOW() > t.close_at THEN 'OVERDUE'
 				ELSE 'NOT_STARTED'
-			END as status
+			END AS status
 		FROM form.task t
-		LEFT JOIN form.task_form tf ON t.task_id = tf.task_id
+		LEFT JOIN form.task_form tf 
+			ON t.task_id = tf.task_id
 		LEFT JOIN form.response r 
 			ON t.task_id = r.task_log_id 
 			AND r.user_id = ?
-		WHERE (? = '' OR DATE(t.open_at) = ?)
+		WHERE (
+			NULLIF(?, '')::date IS NULL
+			OR DATE(t.open_at) = NULLIF(?, '')::date
+		)
 		ORDER BY t.open_at DESC
 	`
 
@@ -164,6 +255,11 @@ func (h *FormHandler) SubmitTask(c *gin.Context) {
 		return
 	}
 
+	if _, supported := standaloneHandlerTables[taskForm.Handler]; !supported {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": fmt.Sprintf("handler %q ยังไม่รองรับการบันทึกข้อมูลอัตโนมัติ", taskForm.Handler)})
+		return
+	}
+
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		response := map[string]interface{}{
 			"response_id":  uuid.New(),
@@ -178,13 +274,8 @@ func (h *FormHandler) SubmitTask(c *gin.Context) {
 			return err
 		}
 
-		// Switch case ตาม handler (เหมือนเดิม)
-		switch taskForm.Handler {
-		case "harvest":
-			fmt.Println("ประมวลผล: harvest")
-		// ... case อื่นๆ ...
-		default:
-			fmt.Printf("บันทึกทั่วไปสำหรับ handler: %s\n", taskForm.Handler)
+		if err := dissectAnswer(tx, taskForm.Handler, req.Answer); err != nil {
+			return err
 		}
 		return nil
 	})

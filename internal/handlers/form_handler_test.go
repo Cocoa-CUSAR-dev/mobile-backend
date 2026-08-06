@@ -296,6 +296,83 @@ func TestSubmitFormRequest_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+// --- Dissection: DB-independent helpers ------------------------------------
+
+func TestFilterKnownColumns_KeepsOnlyRealColumns(t *testing.T) {
+	columns := map[string]bool{"harvest_id": true, "harvest_date": true, "quantity_kg": true}
+	answer := map[string]interface{}{
+		"harvest_date": "2026-01-05",
+		"quantity_kg":  12.5,
+		"task_id":      "t1",  // injected by SubmitTask, not a real column
+		"note_to_self": "n/a", // farmer/client-controlled, not a real column
+	}
+
+	got := filterKnownColumns(answer, columns)
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 known columns kept, got %d (%v)", len(got), got)
+	}
+	if got["harvest_date"] != "2026-01-05" || got["quantity_kg"] != 12.5 {
+		t.Errorf("unexpected filtered values: %v", got)
+	}
+	if _, ok := got["task_id"]; ok {
+		t.Error("task_id should have been filtered out — not a real column")
+	}
+	if _, ok := got["note_to_self"]; ok {
+		t.Error("note_to_self should have been filtered out — not a real column")
+	}
+}
+
+func TestFilterKnownColumns_EmptyWhenNoMatch(t *testing.T) {
+	columns := map[string]bool{"harvest_id": true}
+	answer := map[string]interface{}{"unrelated_field": "value"}
+
+	got := filterKnownColumns(answer, columns)
+
+	if len(got) != 0 {
+		t.Errorf("want empty map, got %v", got)
+	}
+}
+
+func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
+	// Guards against typos/drift from the verified table in
+	// task-dissection-design.md — these 5 handlers have their own
+	// generated PK and are safe to dissect generically.
+	want := map[string]string{
+		"farm_activity":            "agriculture.farm_activity",
+		"processing_record":        "processing.processing_record",
+		"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
+		"harvest":                  "collection.harvest",
+		"batch":                    "processing.batch",
+	}
+	if len(standaloneHandlerTables) != len(want) {
+		t.Fatalf("want %d standalone handlers, got %d", len(want), len(standaloneHandlerTables))
+	}
+	for handler, table := range want {
+		if got := standaloneHandlerTables[handler]; got != table {
+			t.Errorf("handler %q: want table %q, got %q", handler, table, got)
+		}
+	}
+	// The 5 child-row handlers must NOT be in this map — they need a
+	// parent ID the submission doesn't carry (see design doc).
+	blocked := []string{
+		"farm_activity_fertilizer", "farm_activity_chemical",
+		"harvest_grade_detail", "fermentation_batch", "drying_batch",
+	}
+	for _, handler := range blocked {
+		if _, ok := standaloneHandlerTables[handler]; ok {
+			t.Errorf("handler %q should not be dissectable yet — needs a parent ID", handler)
+		}
+	}
+}
+
+func TestDissectAnswer_UnsupportedHandlerReturnsError(t *testing.T) {
+	err := dissectAnswer(nil, "fermentation_batch", map[string]interface{}{"batch_id": "b1"})
+	if err == nil {
+		t.Fatal("want error for unsupported handler, got nil")
+	}
+}
+
 func TestSubmitFormRequest_RequiredFields(t *testing.T) {
 	// Each field independently should be rejected when missing.
 	// Note: json.Unmarshal alone does NOT enforce binding:"required" —
