@@ -3,7 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,13 @@ import (
 type FormHandler struct {
 	DB *gorm.DB
 }
+
+// webBackendClient calls the Kotlin service (web-backend). A single client
+// is reused across requests rather than allocating one per call. 30s
+// tolerates web-backend's ref-choice schema-resolution cache-miss cost
+// (one-time per option field per process lifetime, see BE-5) — once warm,
+// real calls land in ~1-2s.
+var webBackendClient = &http.Client{Timeout: 30 * time.Second}
 
 // standaloneHandlerTables lists the handlers whose destination table has its
 // own generated primary key, so an answer payload can be dissected into an
@@ -149,6 +158,79 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, tasks)
+}
+
+// 1b. GET /tasks/:taskId/form — ดึงโครงสร้างฟอร์มสดจาก web-backend (Kotlin)
+// โดยส่งต่อ JWT ของ farmer เอง (Bearer) ให้ web-backend ตรวจสอบสิทธิ์
+// read:form:assigned เอง — ดู web-backend feat/farmer-scoped-form-auth
+func (h *FormHandler) GetTaskForm(c *gin.Context) {
+	taskID := c.Param("taskId")
+
+	var taskForm struct {
+		FormID  uuid.UUID `gorm:"column:form_id"`
+		Version int       `gorm:"column:version"`
+	}
+	if err := h.DB.Table("form.task_form").
+		Select("form_id, version").
+		Where("task_id = ?", taskID).
+		First(&taskForm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบแบบฟอร์มสำหรับงานที่ระบุ"})
+		return
+	}
+
+	tokenVal, ok := c.Get("jwtToken")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired, please login again"})
+		return
+	}
+	token := tokenVal.(string)
+
+	webBackendURL := os.Getenv("WEB_BACKEND_URL")
+	if webBackendURL == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ยังไม่ได้ตั้งค่า WEB_BACKEND_URL"})
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/forms/%s", webBackendURL, taskForm.FormID.String()), nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "สร้างคำขอไปยังระบบฟอร์มไม่สำเร็จ"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := webBackendClient.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถติดต่อระบบฟอร์มได้"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "อ่านข้อมูลฟอร์มจากระบบฟอร์มไม่สำเร็จ"})
+		return
+	}
+
+	// web-backend wraps responses as { value, error }; unwrap it and attach
+	// task_form.version so the mobile app can cache-bust its local copy.
+	var kotlinResp struct {
+		Value json.RawMessage `json:"value"`
+		Error *string         `json:"error"`
+	}
+	if err := json.Unmarshal(body, &kotlinResp); err != nil {
+		c.Data(resp.StatusCode, "application/json", body)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(resp.StatusCode, gin.H{"error": kotlinResp.Error})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"form":    kotlinResp.Value,
+		"version": taskForm.Version,
+	})
 }
 
 // 2. POST /tasks — ส่งงาน (ดึง taskId จาก Payload)
