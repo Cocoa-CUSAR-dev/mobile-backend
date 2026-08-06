@@ -46,6 +46,9 @@ func JwtAuthMiddleware() gin.HandlerFunc {
 			c.Set("userID", userID)
 		}
 
+		// stash the raw token too, so handlers can forward it to other services
+		c.Set("jwtToken", tokenString)
+
 		c.Next()
 	}
 }
