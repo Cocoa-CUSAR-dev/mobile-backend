@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"go-server-mobile/internal/models"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -110,6 +114,109 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"username":    user.Username,
 		"roles":       roles, // ส่งกลับเป็น ["admin", "farmer", ...]
 		"has_profile": hasProfile,
+	})
+}
+
+// verifyLineIDToken ส่ง idToken (จาก liff.getIDToken() ฝั่ง JS client) ให้ LINE ตรวจสอบว่า
+// ถูกต้อง/ไม่หมดอายุ/ออกให้ channel นี้จริง คืนค่า line_user_id (claim "sub") และชื่อ LINE ที่ verify แล้ว
+// ใช้ร่วมกันทั้ง VerifyLiffToken (ทดสอบเฉยๆ) และ LinkLineAccount (ผูกบัญชีจริง)
+func verifyLineIDToken(idToken string) (lineUserID string, name string, err error) {
+	channelID := os.Getenv("LINE_CHANNEL_ID")
+	if channelID == "" {
+		return "", "", fmt.Errorf("ยังไม่ได้ตั้งค่า LINE_CHANNEL_ID ใน .env")
+	}
+
+	resp, err := http.PostForm("https://api.line.me/oauth2/v2.1/verify", url.Values{
+		"id_token":  {idToken},
+		"client_id": {channelID},
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("เรียก LINE verify endpoint ไม่สำเร็จ: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("อ่านผลลัพธ์จาก LINE ไม่สำเร็จ")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("LINE token ไม่ถูกต้องหรือหมดอายุ")
+	}
+
+	var payload struct {
+		Sub  string `json:"sub"` // นี่คือ line_user_id
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", "", fmt.Errorf("อ่าน payload จาก LINE ไม่สำเร็จ")
+	}
+	return payload.Sub, payload.Name, nil
+}
+
+// VerifyLiffToken เป็น endpoint สำหรับทดสอบเฉยๆ (ใช้กับ static/liff-test/index.html) — verify แล้วคืน line_user_id กลับไปดูตรงๆ
+// ไม่ผูกกับบัญชีอะไร ของจริงใช้ LinkLineAccount
+func (h *AuthHandler) VerifyLiffToken(c *gin.Context) {
+	var req struct {
+		IDToken string `json:"idToken"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken มาด้วย"})
+		return
+	}
+
+	lineUserID, name, err := verifyLineIDToken(req.IDToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"line_user_id": lineUserID,
+		"name":         name,
+	})
+}
+
+// LinkLineAccount ผูก LINE identity เข้ากับบัญชีที่มีอยู่แล้ว (เคส "existing farmer" ใน ADR 0002)
+// รับทั้ง idToken (จาก liff.getIDToken() ฝั่ง client) และ username/password ของบัญชีเดิม
+// verify ทั้งสองอย่างในคำขอเดียว — ใช้กับ static/liff-test/link.html
+func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
+	var req struct {
+		IDToken  string `json:"idToken"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" || req.Username == "" || req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken, username, password มาด้วย"})
+		return
+	}
+
+	// 1. ตรวจสอบบัญชีเดิม (username/password) เหมือน Login()
+	var user models.UserAccount
+	if err := h.DB.Table("auth.user_account").Where("username = ?", req.Username).First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
+		return
+	}
+
+	// 2. ตรวจสอบ idToken กับ LINE
+	lineUserID, lineName, err := verifyLineIDToken(req.IDToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 3. TODO: insert auth.line_identity(line_user_id, user_id) — รอ migration ตารางนี้ตาม ADR 0005 ก่อน
+	// ตอนนี้ verify ผ่านแล้วแต่ยังไม่ persist การผูกบัญชีจริง
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "verify สำเร็จ (ยังไม่ได้บันทึกผูกบัญชี เพราะยังไม่มีตาราง auth.line_identity)",
+		"user_id":      user.UserID,
+		"username":     user.Username,
+		"line_user_id": lineUserID,
+		"line_name":    lineName,
 	})
 }
 

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LIFF Test — Cocoa Supply</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; padding: 24px; max-width: 480px; margin: 0 auto; background:#faf7f2; color:#333; }
+  h1 { font-size: 20px; color:#794c46; }
+  .card { background:#fff; border:1px solid #e5ddd6; border-radius:12px; padding:16px; margin-top:16px; }
+  .label { font-size:12px; color:#888; text-transform:uppercase; margin-bottom:4px; }
+  .value { font-size:16px; word-break: break-all; margin-bottom:12px; }
+  .status { font-weight:bold; }
+  .status.ok { color: #2e7d32; }
+  .status.err { color: #c62828; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; background:#f4f1ec; padding:8px; border-radius:8px; }
+  a { color: #794c46; }
+</style>
+</head>
+<body>
+  <h1>🧪 LIFF Test — ดึง line_user_id (verify เฉยๆ)</h1>
+  <p style="font-size:13px; color:#888;">อยากทดสอบ flow ผูกบัญชีเดิม (login + link) ไปที่ <a href="/liff-link">/liff-link</a> แทน</p>
+  <div class="card">
+    <div class="label">สถานะ</div>
+    <div id="status" class="status">กำลังเริ่มต้น...</div>
+  </div>
+  <div class="card" id="result" style="display:none;">
+    <div class="label">line_user_id (verified โดย backend แล้ว)</div>
+    <div class="value" id="lineUserId">-</div>
+    <div class="label">ชื่อ LINE</div>
+    <div class="value" id="displayName">-</div>
+    <div class="label">Raw response จาก backend</div>
+    <pre id="raw">-</pre>
+  </div>
+
+  <script>
+    // TODO: ใส่ LIFF ID ที่ได้จาก LINE Developers Console > แท็บ LIFF
+    const LIFF_ID = "2010930353-4bm8N7wN";
+
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + (isError ? 'err' : 'ok');
+    }
+
+    async function main() {
+      if (LIFF_ID === "YOUR_LIFF_ID_HERE") {
+        setStatus('ยังไม่ได้ใส่ LIFF_ID ในไฟล์ index.html (บรรทัด const LIFF_ID)', true);
+        return;
+      }
+      try {
+        setStatus('กำลัง liff.init()...');
+        await liff.init({ liffId: LIFF_ID });
+
+        if (!liff.isLoggedIn()) {
+          setStatus('ยังไม่ login — กำลังพาไป login...');
+          liff.login();
+          return;
+        }
+
+        setStatus('login แล้ว — กำลังดึง ID token...');
+        const idToken = liff.getIDToken();
+        if (!idToken) {
+          throw new Error('liff.getIDToken() คืนค่า null — เช็คว่า LIFF app เปิด scope "openid" และ "profile" ไว้ไหม');
+        }
+
+        setStatus('กำลังส่ง idToken ไปให้ backend verify...');
+        const res = await fetch('/public/liff/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken })
+        });
+
+        const data = await res.json();
+        document.getElementById('raw').textContent = JSON.stringify(data, null, 2);
+
+        if (!res.ok) {
+          throw new Error(data.error || 'backend verify ล้มเหลว (status ' + res.status + ')');
+        }
+
+        document.getElementById('lineUserId').textContent = data.line_user_id || '-';
+        document.getElementById('displayName').textContent = data.name || '-';
+        resultEl.style.display = 'block';
+        setStatus('✅ สำเร็จ — ได้ line_user_id ที่ verify กับ LINE แล้ว');
+      } catch (e) {
+        setStatus('❌ error: ' + e.message, true);
+        console.error(e);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

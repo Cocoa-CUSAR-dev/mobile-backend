@@ -39,19 +39,29 @@ func main() {
 	// 4. Setup Router
 	r := gin.Default()
 
+	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
+	r.StaticFile("/liff-test", "./static/liff-test/index.html")
+	r.StaticFile("/liff-link", "./static/liff-test/link.html")
+
 	// CORS: only needed for browser-based callers (e.g. a Flutter web build).
 	// Native mobile HTTP clients ignore CORS entirely, so this was invisible
 	// until something running in a browser tried to call this API directly.
+	// gin-contrib/cors panics at startup if AllowCredentials is true with zero
+	// allowed origins, so only attach the middleware when there's something to allow —
+	// same-origin callers (e.g. static/liff-test/*.html served by this same server)
+	// don't need CORS at all.
 	var corsOrigins []string
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		corsOrigins = strings.Split(raw, ",")
 	}
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     corsOrigins,
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
-	}))
+	if len(corsOrigins) > 0 {
+		r.Use(cors.New(cors.Config{
+			AllowOrigins:     corsOrigins,
+			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+			AllowHeaders:     []string{"Content-Type", "Authorization"},
+			AllowCredentials: true,
+		}))
+	}
 
 	// --- Public Routes ---
 	public := r.Group("/public")
@@ -61,6 +71,9 @@ func main() {
 		public.GET("/test", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "hello world"})
 		})
+
+		public.POST("/liff/verify", authHandler.VerifyLiffToken)
+		public.POST("/liff/link", authHandler.LinkLineAccount)
 	}
 
 	// --- Protected Routes (ต้องผ่าน JWT) ---
