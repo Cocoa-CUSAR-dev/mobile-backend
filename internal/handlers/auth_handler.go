@@ -211,12 +211,25 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 	// 3. TODO: insert auth.line_identity(line_user_id, user_id) — รอ migration ตารางนี้ตาม ADR 0005 ก่อน
 	// ตอนนี้ verify ผ่านแล้วแต่ยังไม่ persist การผูกบัญชีจริง
 
+	var linkReq models.LineLinkRequest
+	linkReq.UserID = user.UserID.String()
+	linkReq.LineUserID = lineUserID
+	linkReq.DisplayName = lineName
+	if err := h.DB.Table("auth.line_identity").Create(&linkReq).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการผูกบัญชี LINE ได้"})
+		return
+	}
+
+	// c.JSON(http.StatusOK, gin.H{
+	// 	"message":      "verify สำเร็จ (ยังไม่ได้บันทึกผูกบัญชี เพราะยังไม่มีตาราง auth.line_identity)",
+	// 	"user_id":      user.UserID,
+	// 	"username":     user.Username,
+	// 	"line_user_id": lineUserID,
+	// 	"line_name":    lineName,
+	// })
+
 	c.JSON(http.StatusOK, gin.H{
-		"message":      "verify สำเร็จ (ยังไม่ได้บันทึกผูกบัญชี เพราะยังไม่มีตาราง auth.line_identity)",
-		"user_id":      user.UserID,
-		"username":     user.Username,
-		"line_user_id": lineUserID,
-		"line_name":    lineName,
+		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 

@@ -29,3 +29,11 @@ type RegisterRequest struct {
 	Password string  `json:"password" binding:"required,min=6"`
 	Email    *string `json:"email"` // ไม่บังคับ (Optional)
 }
+
+type LineLinkRequest struct {
+	UserID   string `json:"user_id" binding:"required"`
+	LineUserID string `json:"line_user_id" binding:"required"`
+	DisplayName string `json:"display_name" binding:"required"`
+}	
+
+	
