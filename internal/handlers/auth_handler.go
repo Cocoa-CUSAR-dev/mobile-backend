@@ -220,16 +220,10 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
-	// c.JSON(http.StatusOK, gin.H{
-	// 	"message":      "verify สำเร็จ (ยังไม่ได้บันทึกผูกบัญชี เพราะยังไม่มีตาราง auth.line_identity)",
-	// 	"user_id":      user.UserID,
-	// 	"username":     user.Username,
-	// 	"line_user_id": lineUserID,
-	// 	"line_name":    lineName,
-	// })
-
 	c.JSON(http.StatusOK, gin.H{
-		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		userId: user.UserID.String(),
+        lineUserId: lineUserID,
+        message: "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว"
 	})
 }
 
