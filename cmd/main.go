@@ -80,6 +80,16 @@ func main() {
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}
+
+	// --- Service Routes (trusted first-party services, e.g. the chatbot —
+	// separate trust model from farmer JWT sessions, see
+	// middleware.ServiceAuthMiddleware) ---
+	service := r.Group("/service")
+	service.Use(middleware.ServiceAuthMiddleware())
+	{
+		service.POST("/tasks", formHandler.SubmitTaskForUser)
+	}
+
 	// 5. Start Server
 	r.Run(":8080")
 }

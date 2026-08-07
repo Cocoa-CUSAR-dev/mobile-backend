@@ -244,13 +244,71 @@ func (h *FormHandler) SubmitTask(c *gin.Context) {
 		return
 	}
 
+	h.submitAnswerForUser(c, userID, req.TaskID, req.Answer)
+}
+
+// SubmitTaskForUserRequest — same shape as SubmitFormRequest plus an
+// explicit user_id, since there's no farmer session here to derive it from.
+type SubmitTaskForUserRequest struct {
+	UserID string                 `json:"user_id" binding:"required"`
+	TaskID string                 `json:"task_id" binding:"required"`
+	Answer map[string]interface{} `json:"answer" binding:"required"`
+}
+
+// 2b. POST /service/tasks — same submission as SubmitTask, but for trusted
+// first-party services (currently: the chatbot), gated by
+// middleware.ServiceAuthMiddleware instead of a farmer's own JWT cookie.
+//
+// The caller names user_id explicitly. Before trusting that claim, this
+// checks a chat.conversation row actually exists for that user_id + task_id
+// — the chatbot only creates one when a real guided-flow conversation
+// happened, so this is the boundary that stops a compromised or buggy
+// caller from submitting fabricated data for an arbitrary farmer. Without
+// it, "the caller knows the service key" alone would be enough to write to
+// any farmer's records, which defeats the point of a scoped credential.
+func (h *FormHandler) SubmitTaskForUser(c *gin.Context) {
+	var req SubmitTaskForUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุข้อมูลให้ครบถ้วน (รวมถึง user_id, task_id)"})
+		return
+	}
+
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id ไม่ถูกต้อง"})
+		return
+	}
+
+	var conversationCount int64
+	if err := h.DB.Table("chat.conversation").
+		Where("user_id = ? AND task_id = ?", userID, req.TaskID).
+		Count(&conversationCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบสิทธิ์ได้"})
+		return
+	}
+	if conversationCount == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "ไม่พบบทสนทนาของผู้ใช้นี้สำหรับงานนี้"})
+		return
+	}
+
+	h.submitAnswerForUser(c, userID, req.TaskID, req.Answer)
+}
+
+// submitAnswerForUser is the shared dissection path both SubmitTask and
+// SubmitTaskForUser use once they've each independently resolved a trusted
+// userID (from a farmer's JWT, or — for the service path — from a verified
+// chat.conversation match). Callers are responsible for that trust decision;
+// this function just does the write.
+func (h *FormHandler) submitAnswerForUser(
+	c *gin.Context, userID uuid.UUID, taskID string, answer map[string]interface{},
+) {
 	// แทรก task_id เข้าไปใน answer เพื่อให้เวลา GET กลับมาข้อมูลจะสมบูรณ์
-	req.Answer["task_id"] = req.TaskID
+	answer["task_id"] = taskID
 
 	var taskForm struct {
 		Handler string
 	}
-	if err := h.DB.Table("form.task_form").Select("handler").Where("task_id = ?", req.TaskID).First(&taskForm).Error; err != nil {
+	if err := h.DB.Table("form.task_form").Select("handler").Where("task_id = ?", taskID).First(&taskForm).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบแบบฟอร์มสำหรับงานที่ระบุ"})
 		return
 	}
@@ -263,10 +321,10 @@ func (h *FormHandler) SubmitTask(c *gin.Context) {
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		response := map[string]interface{}{
 			"response_id":  uuid.New(),
-			"task_log_id":  req.TaskID, // เก็บไว้อ้างอิงในระบบ DB
+			"task_log_id":  taskID, // เก็บไว้อ้างอิงในระบบ DB
 			"user_id":      userID,
 			"submitted_at": time.Now(),
-			"answer":       req.Answer, // ตัวนี้จะมี task_id อยู่ข้างในแล้ว
+			"answer":       answer, // ตัวนี้จะมี task_id อยู่ข้างในแล้ว
 			"status":       "COMPLETED",
 		}
 
@@ -274,7 +332,7 @@ func (h *FormHandler) SubmitTask(c *gin.Context) {
 			return err
 		}
 
-		if err := dissectAnswer(tx, taskForm.Handler, req.Answer); err != nil {
+		if err := dissectAnswer(tx, taskForm.Handler, answer); err != nil {
 			return err
 		}
 		return nil
