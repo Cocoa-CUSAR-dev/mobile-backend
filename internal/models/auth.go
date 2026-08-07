@@ -18,7 +18,6 @@ type UserAccount struct {
 func (UserAccount) TableName() string {
 	return "auth.user_account"
 }
-
 type LoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
@@ -31,9 +30,12 @@ type RegisterRequest struct {
 }
 
 type LineLinkRequest struct {
-	UserID   string `json:"user_id" binding:"required"`
+	UserID   uuid.UUID `json:"user_id" binding:"required"`
 	LineUserID string `json:"line_user_id" binding:"required"`
 	DisplayName string `json:"display_name" binding:"required"`
-}	
+}
 
-	
+func (LineLinkRequest) TableName() string {
+	return "auth.line_identity"
+}
+

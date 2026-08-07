@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go-server-mobile/internal/models"
 	"io"
@@ -208,22 +209,26 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
-	// 3. TODO: insert auth.line_identity(line_user_id, user_id) — รอ migration ตารางนี้ตาม ADR 0005 ก่อน
-	// ตอนนี้ verify ผ่านแล้วแต่ยังไม่ persist การผูกบัญชีจริง
-
 	var linkReq models.LineLinkRequest
-	linkReq.UserID = user.UserID.String()
+	linkReq.UserID = user.UserID
 	linkReq.LineUserID = lineUserID
 	linkReq.DisplayName = lineName
-	if err := h.DB.Table("auth.line_identity").Create(&linkReq).Error; err != nil {
+	if err := h.DB.Create(&linkReq).Error; err != nil {
+		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
+		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
+		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			c.JSON(http.StatusConflict, gin.H{"error": "บัญชี LINE นี้ถูกผูกกับบัญชีผู้ใช้ไปแล้ว"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการผูกบัญชี LINE ได้"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		userId: user.UserID.String(),
-        lineUserId: lineUserID,
-        message: "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว"
+		"user_id": user.UserID.String(),
+		"line_user_id": lineUserID,
+		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 

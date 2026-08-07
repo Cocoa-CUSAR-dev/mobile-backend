@@ -44,6 +44,11 @@ func InitDB() *gorm.DB {
         },
         // ปิด FullSaveAssociations เพื่อความปลอดภัยในการ Update ข้อมูล
         FullSaveAssociations: false,
+        // แปล error เฉพาะของ Postgres (เช่น unique violation) ให้เป็น error
+        // กลางของ GORM (gorm.ErrDuplicatedKey ฯลฯ) จะได้เช็คด้วย errors.Is()
+        // ในโค้ด handler ได้โดยไม่ต้อง import driver เฉพาะ (จำเป็นสำหรับ
+        // LinkLineAccount ที่ต้องแยกเคส "LINE account ผูกซ้ำ" ออกจาก error อื่น)
+        TranslateError: true,
     })
 
     if err != nil {
