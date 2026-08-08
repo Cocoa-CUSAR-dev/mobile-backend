@@ -1,10 +1,16 @@
 package handlers
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"go-server-mobile/internal/models"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +23,13 @@ import (
 type AuthHandler struct {
 	DB *gorm.DB
 }
+
+// lineAPIClient calls LINE's own token-verification endpoint. A dedicated,
+// timeout-bound client -- same reasoning as form_handler.go's
+// webBackendClient -- http.PostForm (used previously) always runs on
+// http.DefaultClient, which has no timeout at all, so a slow/unresponsive
+// LINE endpoint would hang this request indefinitely.
+var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
 func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
@@ -110,6 +123,131 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"username":    user.Username,
 		"roles":       roles, // ส่งกลับเป็น ["admin", "farmer", ...]
 		"has_profile": hasProfile,
+	})
+}
+
+// verifyLineIDToken ส่ง idToken (จาก liff.getIDToken() ฝั่ง JS client) ให้ LINE ตรวจสอบว่า
+// ถูกต้อง/ไม่หมดอายุ/ออกให้ channel นี้จริง คืนค่า line_user_id (claim "sub") และชื่อ LINE ที่ verify แล้ว
+// ใช้ร่วมกันทั้ง VerifyLiffToken (ทดสอบเฉยๆ) และ LinkLineAccount (ผูกบัญชีจริง)
+func verifyLineIDToken(idToken string) (lineUserID string, name string, err error) {
+	channelID := os.Getenv("LINE_CHANNEL_ID")
+	if channelID == "" {
+		return "", "", fmt.Errorf("ยังไม่ได้ตั้งค่า LINE_CHANNEL_ID ใน .env")
+	}
+
+	form := url.Values{
+		"id_token":  {idToken},
+		"client_id": {channelID},
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://api.line.me/oauth2/v2.1/verify", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", fmt.Errorf("สร้างคำขอตรวจสอบ LINE token ไม่สำเร็จ: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := lineAPIClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("เรียก LINE verify endpoint ไม่สำเร็จ: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("อ่านผลลัพธ์จาก LINE ไม่สำเร็จ")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("LINE token ไม่ถูกต้องหรือหมดอายุ")
+	}
+
+	var payload struct {
+		Sub  string `json:"sub"` // นี่คือ line_user_id
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", "", fmt.Errorf("อ่าน payload จาก LINE ไม่สำเร็จ")
+	}
+	return payload.Sub, payload.Name, nil
+}
+
+// VerifyLiffToken เป็น endpoint สำหรับทดสอบเฉยๆ (ใช้กับ static/liff-test/index.html) — verify แล้วคืน line_user_id กลับไปดูตรงๆ
+// ไม่ผูกกับบัญชีอะไร ของจริงใช้ LinkLineAccount
+func (h *AuthHandler) VerifyLiffToken(c *gin.Context) {
+	var req struct {
+		IDToken string `json:"idToken"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken มาด้วย"})
+		return
+	}
+
+	lineUserID, name, err := verifyLineIDToken(req.IDToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"line_user_id": lineUserID,
+		"name":         name,
+	})
+}
+
+// LinkLineAccount ผูก LINE identity เข้ากับบัญชีที่มีอยู่แล้ว (เคส "existing farmer" ใน ADR 0002)
+// รับทั้ง idToken (จาก liff.getIDToken() ฝั่ง client) และ username/password ของบัญชีเดิม
+// verify ทั้งสองอย่างในคำขอเดียว — ใช้กับ static/liff-test/link.html
+func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
+	var req struct {
+		IDToken  string `json:"idToken"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" || req.Username == "" || req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken, username, password มาด้วย"})
+		return
+	}
+
+	// 1. ตรวจสอบบัญชีเดิม (username/password) เหมือน Login()
+	var user models.UserAccount
+	if err := h.DB.Table("auth.user_account").Where("username = ?", req.Username).First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
+		return
+	}
+	// PasswordHash is *string (nullable -- LINE-only accounts have none, see
+	// DB-3). Same nil-safe check Login() already does; a plain
+	// []byte(user.PasswordHash) doesn't compile against a *string and was
+	// the actual CI failure here.
+	if user.PasswordHash == nil || bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)) != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
+		return
+	}
+
+	// 2. ตรวจสอบ idToken กับ LINE
+	lineUserID, lineName, err := verifyLineIDToken(req.IDToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	var linkReq models.LineLinkRequest
+	linkReq.UserID = user.UserID
+	linkReq.LineUserID = lineUserID
+	linkReq.DisplayName = lineName
+	if err := h.DB.Create(&linkReq).Error; err != nil {
+		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
+		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
+		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			c.JSON(http.StatusConflict, gin.H{"error": "บัญชี LINE นี้ถูกผูกกับบัญชีผู้ใช้ไปแล้ว"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการผูกบัญชี LINE ได้"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id": user.UserID.String(),
+		"line_user_id": lineUserID,
+		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 
