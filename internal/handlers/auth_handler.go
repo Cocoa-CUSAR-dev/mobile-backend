@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,13 @@ import (
 type AuthHandler struct {
 	DB *gorm.DB
 }
+
+// lineAPIClient calls LINE's own token-verification endpoint. A dedicated,
+// timeout-bound client -- same reasoning as form_handler.go's
+// webBackendClient -- http.PostForm (used previously) always runs on
+// http.DefaultClient, which has no timeout at all, so a slow/unresponsive
+// LINE endpoint would hang this request indefinitely.
+var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
 func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
@@ -127,10 +135,17 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 		return "", "", fmt.Errorf("ยังไม่ได้ตั้งค่า LINE_CHANNEL_ID ใน .env")
 	}
 
-	resp, err := http.PostForm("https://api.line.me/oauth2/v2.1/verify", url.Values{
+	form := url.Values{
 		"id_token":  {idToken},
 		"client_id": {channelID},
-	})
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://api.line.me/oauth2/v2.1/verify", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", fmt.Errorf("สร้างคำขอตรวจสอบ LINE token ไม่สำเร็จ: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := lineAPIClient.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("เรียก LINE verify endpoint ไม่สำเร็จ: %w", err)
 	}
@@ -197,7 +212,11 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+	// PasswordHash is *string (nullable -- LINE-only accounts have none, see
+	// DB-3). Same nil-safe check Login() already does; a plain
+	// []byte(user.PasswordHash) doesn't compile against a *string and was
+	// the actual CI failure here.
+	if user.PasswordHash == nil || bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)) != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
 		return
 	}
