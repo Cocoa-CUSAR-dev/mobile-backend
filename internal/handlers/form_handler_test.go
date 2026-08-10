@@ -150,6 +150,117 @@ func TestSubmitTask_EmptyBody(t *testing.T) {
 	}
 }
 
+// --- SubmitTaskForUser: pre-DB branches ------------------------------------
+//
+// Unlike SubmitTask, this handler reads userID from the request body, not
+// gin context — so there's no "missing userID panics" case to cover here.
+// The chat.conversation existence check (the actual new security boundary)
+// touches the DB and isn't covered by these tests, same as dissectAnswer's
+// real INSERT isn't — this repo's tests only cover pre-DB branches (see
+// TestDissectAnswer_UnsupportedHandlerReturnsError below for the one
+// DB-independent case). It's covered by manual verification against a real
+// DB instead — see the PR description.
+
+func TestSubmitTaskForUser_InvalidJSON(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{not json`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingUserID(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"task_id":"t1","answer":{"q1":"a"}}`)) // no user_id
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingTaskID(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"`+uuid.New().String()+`","answer":{"q1":"a"}}`)) // no task_id
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingAnswer(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"`+uuid.New().String()+`","task_id":"t1"}`)) // no answer
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MalformedUserIDRejectedBeforeDB(t *testing.T) {
+	// "not-a-uuid" passes binding:"required" (it's a non-empty string) but
+	// must fail uuid.Parse before any DB call happens.
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"not-a-uuid","task_id":"t1","answer":{"q1":"a"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for malformed user_id, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUserRequest_JSONRoundTrip(t *testing.T) {
+	uid := uuid.New().String()
+	in := `{"user_id":"` + uid + `","task_id":"task-123","answer":{"q1":"เก็บเกี่ยว"}}`
+	var req SubmitTaskForUserRequest
+	if err := json.Unmarshal([]byte(in), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.UserID != uid {
+		t.Errorf("user_id: want %s, got %q", uid, req.UserID)
+	}
+	if req.TaskID != "task-123" {
+		t.Errorf("task_id: want task-123, got %q", req.TaskID)
+	}
+	if v, ok := req.Answer["q1"].(string); !ok || v != "เก็บเกี่ยว" {
+		t.Errorf("answer.q1: want เก็บเกี่ยว, got %v", req.Answer["q1"])
+	}
+}
+
 // --- GetTaskResponse: pre-DB branches -------------------------------------
 
 func TestGetTaskResponse_MissingUserIDPanics(t *testing.T) {
