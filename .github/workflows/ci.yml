@@ -51,6 +51,28 @@ jobs:
   test:
     name: Test (go vet, build, race + coverage)
     runs-on: ubuntu-latest
+    # Real Postgres for the LinkLineAccount integration tests
+    # (internal/handlers/auth_handler_db_test.go): that handler's "already
+    # linked" (409) branch depends on GORM's TranslateError actually turning
+    # a Postgres unique-violation into gorm.ErrDuplicatedKey, which isn't
+    # something worth faking with a SQL mock. The tests apply their own
+    # minimal schema (see testSchemaDDL) rather than pulling in the separate
+    # `database` repo's Flyway migrations, so no extra checkout/secret is
+    # needed here -- just a bare Postgres to connect to.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cocoa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -86,7 +108,19 @@ jobs:
       #
       # ./... picks up internal/handlers tests + the JS stub doesn't
       # run here (handled below).
+      # RUN_DB_TESTS opts in to the Postgres-backed tests above; without it
+      # (e.g. a dev running `go test ./...` with no local Postgres) they
+      # skip themselves instead of failing. DB_* names match what
+      # internal/database/postgres.go's InitDB() already reads in prod.
       - name: go test (race + coverage)
+        env:
+          RUN_DB_TESTS: '1'
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: cocoa_test
+          DB_SSLMODE: disable
         run: |
           go test -race -coverprofile=coverage.out -covermode=atomic ./... -v
 
