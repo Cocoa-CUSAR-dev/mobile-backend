@@ -110,17 +110,21 @@ jobs:
       # run here (handled below).
       # RUN_DB_TESTS opts in to the Postgres-backed tests above; without it
       # (e.g. a dev running `go test ./...` with no local Postgres) they
-      # skip themselves instead of failing. DB_* names match what
-      # internal/database/postgres.go's InitDB() already reads in prod.
+      # skip themselves instead of failing. TEST_DB_* (not DB_*) is
+      # deliberate: DB_* is what internal/database/postgres.go's InitDB()
+      # reads for the real app, and a dev's shell/.env commonly already has
+      # those set to a real database (e.g. Neon). Reusing that name here
+      # would mean RUN_DB_TESTS=1 truncates the real database the moment
+      # someone's ordinary dev environment leaks into a test run.
       - name: go test (race + coverage)
         env:
           RUN_DB_TESTS: '1'
-          DB_HOST: localhost
-          DB_PORT: 5432
-          DB_USER: postgres
-          DB_PASSWORD: postgres
-          DB_NAME: cocoa_test
-          DB_SSLMODE: disable
+          TEST_DB_HOST: localhost
+          TEST_DB_PORT: 5432
+          TEST_DB_USER: postgres
+          TEST_DB_PASSWORD: postgres
+          TEST_DB_NAME: cocoa_test
+          TEST_DB_SSLMODE: disable
         run: |
           go test -race -coverprofile=coverage.out -covermode=atomic ./... -v
 

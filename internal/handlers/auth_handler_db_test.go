@@ -84,6 +84,13 @@ func envOrDefault(key, fallback string) string {
 // then returns a connection with a fresh, empty auth.user_account /
 // auth.line_identity pair -- same TranslateError setup as production so
 // gorm.ErrDuplicatedKey behaves identically to what LinkLineAccount expects.
+//
+// Deliberately named TEST_DB_* rather than reusing InitDB()'s DB_* names: a
+// dev's shell/.env commonly already has the real DB_HOST/DB_USER/DB_PASSWORD
+// exported (e.g. pointing at Neon) so the app can run locally. If this
+// helper read those same names, opting in with RUN_DB_TESTS=1 would TRUNCATE
+// the real database instead of a throwaway one. A disjoint name makes that
+// impossible -- you have to opt in twice, deliberately.
 func openIntegrationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	if os.Getenv("RUN_DB_TESTS") == "" {
@@ -91,12 +98,12 @@ func openIntegrationTestDB(t *testing.T) *gorm.DB {
 	}
 
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-		envOrDefault("DB_HOST", "localhost"),
-		envOrDefault("DB_USER", "postgres"),
-		envOrDefault("DB_PASSWORD", "postgres"),
-		envOrDefault("DB_NAME", "cocoa_test"),
-		envOrDefault("DB_PORT", "5432"),
-		envOrDefault("DB_SSLMODE", "disable"),
+		envOrDefault("TEST_DB_HOST", "localhost"),
+		envOrDefault("TEST_DB_USER", "postgres"),
+		envOrDefault("TEST_DB_PASSWORD", "postgres"),
+		envOrDefault("TEST_DB_NAME", "cocoa_test"),
+		envOrDefault("TEST_DB_PORT", "5432"),
+		envOrDefault("TEST_DB_SSLMODE", "disable"),
 	)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{TablePrefix: "", SingularTable: true},
