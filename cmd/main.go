@@ -5,6 +5,7 @@ import (
 	"go-server-mobile/internal/database"
 	"go-server-mobile/internal/handlers"
 	"go-server-mobile/internal/middleware"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -120,5 +121,7 @@ func main() {
 	}
 
 	// 5. Start Server
-	r.Run(":8080")
+	if err := r.Run(":8080"); err != nil {
+		log.Fatalf("server failed to start: %v", err)
+	}
 }
