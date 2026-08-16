@@ -1,0 +1,20 @@
+{
+  "name": "mobile-backend",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-16",
+  "containers": [
+    {
+      "class_name": "MobileBackend",
+      "image": "./Dockerfile",
+      "max_instances": 10
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MOBILE_BACKEND", "class_name": "MobileBackend" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MobileBackend"] }
+  ]
+}
