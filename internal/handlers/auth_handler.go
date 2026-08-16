@@ -228,11 +228,30 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
+	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
+	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
+	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
+	type RoleResult struct {
+		RoleName string
+	}
+	var dbRoles []RoleResult
+	h.DB.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", user.UserID).
+		Scan(&dbRoles)
+	hasProfile := len(dbRoles) > 0
+
 	var linkReq models.LineLinkRequest
 	linkReq.UserID = user.UserID
 	linkReq.LineUserID = lineUserID
 	linkReq.DisplayName = lineName
 	if err := h.DB.Create(&linkReq).Error; err != nil {
+		// log error จริงไว้ (ก่อนหน้านี้ไม่มีเลย ทำให้ debug ไม่ได้ว่าทำไม
+		// insert พังจริงๆ — ข้อความที่ตอบกลับ user เป็นแค่สรุปแบบเป็นมิตร)
+		fmt.Printf("❌ LinkLineAccount: DB.Create(auth.line_identity) error: %v\n", err)
+
 		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
 		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
 		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
@@ -245,9 +264,10 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.UserID.String(),
+		"user_id":      user.UserID.String(),
 		"line_user_id": lineUserID,
-		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"has_profile":  hasProfile,
+		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 
