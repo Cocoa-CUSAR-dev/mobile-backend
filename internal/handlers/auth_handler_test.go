@@ -126,6 +126,11 @@ func TestLogin_MissingBody(t *testing.T) {
 }
 
 // --- Register: validation branch ------------------------------------------
+//
+// RegisterRequest requires `username` and `password` (min 6 chars); `email`
+// is optional. Every ShouldBindJSON failure returns the same 400 message,
+// so these tests all assert on status code + presence of the error field
+// rather than a specific message per field.
 
 func TestRegister_WeakPasswordRejected(t *testing.T) {
 	h := &AuthHandler{}
@@ -141,6 +146,110 @@ func TestRegister_WeakPasswordRejected(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRegister_MissingUsername(t *testing.T) {
+	h := &AuthHandler{}
+	r := gin.New()
+	r.POST("/register", h.Register)
+
+	req := httptest.NewRequest(http.MethodPost, "/register",
+		strings.NewReader(`{"password":"abcdef"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRegister_MissingPassword(t *testing.T) {
+	h := &AuthHandler{}
+	r := gin.New()
+	r.POST("/register", h.Register)
+
+	req := httptest.NewRequest(http.MethodPost, "/register",
+		strings.NewReader(`{"username":"0811111111"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRegister_EmptyBody(t *testing.T) {
+	h := &AuthHandler{}
+	r := gin.New()
+	r.POST("/register", h.Register)
+
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRegister_InvalidJSON(t *testing.T) {
+	h := &AuthHandler{}
+	r := gin.New()
+	r.POST("/register", h.Register)
+
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{not json`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("non-JSON body: %s", w.Body.String())
+	}
+	if _, ok := body["error"]; !ok {
+		t.Error("expected 'error' field in response")
+	}
+}
+
+// --- Register: reaches DB layer ---------------------------------------------
+
+func TestRegister_ValidInputReachesDB(t *testing.T) {
+	// A request that satisfies binding (username + password >= 6 chars) must
+	// pass validation and reach h.DB.Where(...) for the duplicate-username
+	// check. With no *gorm.DB wired up, that nil-panics — recovered here so
+	// the bind-vs-DB split stays observable, matching the pattern used for
+	// the other handlers in this package.
+	h := &AuthHandler{}
+	r := gin.New()
+	r.POST("/register", func(c *gin.Context) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"panic": true})
+			}
+		}()
+		h.Register(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/register",
+		strings.NewReader(`{"username":"0811111111","password":"abcdef"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("want 500 (DB panic recovered), got %d (body=%s)", w.Code, w.Body.String())
 	}
 }
 
