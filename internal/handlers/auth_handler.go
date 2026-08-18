@@ -31,7 +31,7 @@ type AuthHandler struct {
 // LINE endpoint would hang this request indefinitely.
 var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
-func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
+func GenerateToken(userID uuid.UUID, username string, roles []string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
 	// JWT_ACCESS_TOKEN_EXPIRATION is in SECONDS (matches the env var name
 	// and the convention used in docker-compose.yml / .env.sample).
@@ -41,9 +41,17 @@ func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	expirationSec, _ := strconv.Atoi(os.Getenv("JWT_ACCESS_TOKEN_EXPIRATION"))
 	expirationTime := time.Duration(expirationSec) * time.Second
 
+	// roles is nil for callers that don't have any yet (e.g. a brand-new
+	// account before any profile exists) — normalize to [] so the "roles"
+	// claim always decodes as a JSON array, never `null`.
+	if roles == nil {
+		roles = []string{}
+	}
+
 	claims := jwt.MapClaims{
 		"user_id": userID.String(), // ฝัง ID ลงใน Token
 		"sub":     username,
+		"roles":   roles, // ใช้ตรวจสอบ Permission ใน JwtAuthMiddleware
 		"iat":     time.Now().Unix(),
 		"exp":     time.Now().Add(expirationTime).Unix(),
 	}
@@ -108,7 +116,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// ---------------------------------------
 
 	// 4. สร้าง JWT Token (ส่ง userID และ roles เข้าไปด้วยเพื่อให้ Middleware ตรวจสอบ Permission ได้)
-	token, maxAge, err := GenerateToken(user.UserID, user.Username)
+	token, maxAge, err := GenerateToken(user.UserID, user.Username, roles)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
 		return
