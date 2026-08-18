@@ -28,16 +28,27 @@ var webBackendClient = &http.Client{Timeout: 30 * time.Second}
 
 // standaloneHandlerTables lists the handlers whose destination table has its
 // own generated primary key, so an answer payload can be dissected into an
-// INSERT without needing a parent row from outside the submission. The other
-// 5 live handlers (farm_activity_fertilizer, farm_activity_chemical,
-// harvest_grade_detail, fermentation_batch, drying_batch) are child rows that
-// need a parent ID the submission doesn't carry — see task-dissection-design.md.
+// INSERT without needing a parent row from outside the submission.
 var standaloneHandlerTables = map[string]string{
 	"farm_activity":            "agriculture.farm_activity",
 	"processing_record":        "processing.processing_record",
 	"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
 	"harvest":                  "collection.harvest",
 	"batch":                    "processing.batch",
+
+	// The 5 previously-blocked child handlers — each needs a parent ID
+	// (farm_activity_id / harvest_id / batch_id) that isn't in the
+	// submission's own answer fields anywhere else. That's no longer a
+	// dissection problem: the chatbot now resolves the parent ID via a
+	// farm/station-scoped picker (chatbot's src/line/parent_picker.py)
+	// before asking any of the form's real questions, and it arrives here
+	// as a normal answer field, filtered through liveColumns like any
+	// other. See docs/plans/chatbot-child-handler-design.md.
+	"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
+	"farm_activity_chemical":   "agriculture.farm_activity_chemical",
+	"harvest_grade_detail":     "collection.harvest_grade_detail",
+	"fermentation_batch":       "processing.fermentation_batch",
+	"drying_batch":             "processing.drying_batch",
 }
 
 // columnsCache holds table (schema.table) -> set of live column names.
