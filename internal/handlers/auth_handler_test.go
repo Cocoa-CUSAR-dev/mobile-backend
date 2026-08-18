@@ -64,9 +64,6 @@ func TestGenerateToken_SignedAndDecodable(t *testing.T) {
 		t.Errorf("claim user_id: want %q, got %q", uid.String(), gotUID)
 	}
 
-	// This is the bug #7 assertion: the token must actually carry roles,
-	// not just user identity, so JwtAuthMiddleware has something to check
-	// permissions against.
 	gotRolesRaw, ok := claims["roles"].([]interface{})
 	if !ok {
 		t.Fatalf("claim roles: want []interface{}, got %T (%v)", claims["roles"], claims["roles"])
