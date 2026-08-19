@@ -228,6 +228,21 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
+	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
+	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
+	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
+	type RoleResult struct {
+		RoleName string
+	}
+	var dbRoles []RoleResult
+	h.DB.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", user.UserID).
+		Scan(&dbRoles)
+	hasProfile := len(dbRoles) > 0
+
 	var linkReq models.LineLinkRequest
 	linkReq.UserID = user.UserID
 	linkReq.LineUserID = lineUserID
@@ -244,10 +259,28 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// เดิมฟังก์ชันนี้ verify แล้วจบเลย ไม่เคยสร้าง session/cookie ให้เลย ต่างจาก
+	// Login() — ทำให้ frontend เรียก endpoint ที่ต้อง auth ต่อ (เช่น
+	// GET /constants/province, district, subdistrict หรือแม้แต่ POST /farmers
+	// ตอนกดยืนยันลงทะเบียน) ไม่ได้เลย ได้ 401 กลับมาตลอด รายการเลยว่างเปล่า
+	// ทุกครั้งไม่ว่าจะพิมพ์ค้นหาอะไรก็ตาม — ต้อง set cookie แบบเดียวกับ Login()
+	// ตรงนี้เพื่อให้ session ใช้งานต่อได้จริงหลังเชื่อมบัญชี LINE สำเร็จ
+	jwtName := os.Getenv("JWT_NAME")
+	if jwtName == "" {
+		jwtName = "cocoa_mobile_jwt"
+	}
+	token, maxAge, err := GenerateToken(user.UserID, user.Username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถสร้าง session ได้"})
+		return
+	}
+	c.SetCookie(jwtName, token, maxAge, "/", "", false, true)
+
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.UserID.String(),
+		"user_id":      user.UserID.String(),
 		"line_user_id": lineUserID,
-		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"has_profile":  hasProfile,
+		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 
