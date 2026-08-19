@@ -74,7 +74,6 @@ func main() {
 		})
 
 		public.POST("/liff/verify", authHandler.VerifyLiffToken)
-		public.POST("/liff/link", authHandler.LinkLineAccount)
 	}
 
 	// --- Protected Routes (ต้องผ่าน JWT) ---
@@ -83,6 +82,7 @@ func main() {
 	{
 		// --- 0. อื่นๆ --
 		protected.GET("/auth/me", authHandler.GetMe)
+		protected.POST("/line/link", authHandler.LinkLineIdentity)
 		protected.GET("/constants/:key", refHandler.GetConstants)
 		// --- 1. เกษตรกร (Agriculture) ---
 		protected.POST("/farmers", agricultureHandler.RegisterFarmerProfile)

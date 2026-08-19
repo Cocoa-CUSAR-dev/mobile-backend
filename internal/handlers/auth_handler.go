@@ -128,7 +128,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 // verifyLineIDToken ส่ง idToken (จาก liff.getIDToken() ฝั่ง JS client) ให้ LINE ตรวจสอบว่า
 // ถูกต้อง/ไม่หมดอายุ/ออกให้ channel นี้จริง คืนค่า line_user_id (claim "sub") และชื่อ LINE ที่ verify แล้ว
-// ใช้ร่วมกันทั้ง VerifyLiffToken (ทดสอบเฉยๆ) และ LinkLineAccount (ผูกบัญชีจริง)
+// ใช้ร่วมกันทั้ง VerifyLiffToken (ทดสอบเฉยๆ) และ LinkLineIdentity (ผูกบัญชีจริง)
 func verifyLineIDToken(idToken string) (lineUserID string, name string, err error) {
 	channelID := os.Getenv("LINE_CHANNEL_ID")
 	if channelID == "" {
@@ -170,7 +170,7 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 }
 
 // VerifyLiffToken เป็น endpoint สำหรับทดสอบเฉยๆ (ใช้กับ static/liff-test/index.html) — verify แล้วคืน line_user_id กลับไปดูตรงๆ
-// ไม่ผูกกับบัญชีอะไร ของจริงใช้ LinkLineAccount
+// ไม่ผูกกับบัญชีอะไร ของจริงใช้ LinkLineIdentity
 func (h *AuthHandler) VerifyLiffToken(c *gin.Context) {
 	var req struct {
 		IDToken string `json:"idToken"`
@@ -192,95 +192,76 @@ func (h *AuthHandler) VerifyLiffToken(c *gin.Context) {
 	})
 }
 
-// LinkLineAccount ผูก LINE identity เข้ากับบัญชีที่มีอยู่แล้ว (เคส "existing farmer" ใน ADR 0002)
-// รับทั้ง idToken (จาก liff.getIDToken() ฝั่ง client) และ username/password ของบัญชีเดิม
-// verify ทั้งสองอย่างในคำขอเดียว — ใช้กับ static/liff-test/link.html
-func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
+// LinkLineIdentity ผูก LINE identity เข้ากับบัญชีที่ login อยู่แล้ว (ตัวตนมาจาก
+// JWT cookie ผ่าน middleware.JwtAuthMiddleware ไม่ใช่ username/password ในคำขอ
+// อีกต่อไป) — แยกออกจาก login แล้ว (เดิม LinkLineIdentity ทำ login+link พร้อม
+// กันในคำขอเดียว ทำให้ user ที่มีบัญชี+เชื่อม LINE ไปแล้วแต่ยังไม่มีโปรไฟล์ ถูก
+// บล็อกด้วย error "ผูกไปแล้ว" ทุกครั้งที่ login ซ้ำเข้ามา ทั้งที่แค่จะมากรอก
+// โปรไฟล์ต่อ) endpoint นี้ idempotent: ถ้า user ที่ login อยู่เชื่อมกับ LINE
+// บัญชีนี้ไปแล้ว ถือว่าสำเร็จเลย ไม่ error — ให้ frontend ไปหน้า "เชื่อมแล้ว"
+// แทนหน้า "เชื่อมสำเร็จ" ผ่าน flag already_linked ในคำตอบ
+func (h *AuthHandler) LinkLineIdentity(c *gin.Context) {
+	val, _ := c.Get("userID")
+	userID := val.(uuid.UUID)
+
 	var req struct {
-		IDToken  string `json:"idToken"`
-		Username string `json:"username"`
-		Password string `json:"password"`
+		IDToken string `json:"idToken"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" || req.Username == "" || req.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken, username, password มาด้วย"})
+	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องส่ง idToken มาด้วย"})
 		return
 	}
 
-	// 1. ตรวจสอบบัญชีเดิม (username/password) เหมือน Login()
-	var user models.UserAccount
-	if err := h.DB.Table("auth.user_account").Where("username = ?", req.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
-		return
-	}
-	// PasswordHash is *string (nullable -- LINE-only accounts have none, see
-	// DB-3). Same nil-safe check Login() already does; a plain
-	// []byte(user.PasswordHash) doesn't compile against a *string and was
-	// the actual CI failure here.
-	if user.PasswordHash == nil || bcrypt.CompareHashAndPassword([]byte(*user.PasswordHash), []byte(req.Password)) != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "ชื่อผู้ใช้ หรือ รหัสผ่าน ไม่ถูกต้อง"})
-		return
-	}
-
-	// 2. ตรวจสอบ idToken กับ LINE
 	lineUserID, lineName, err := verifyLineIDToken(req.IDToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
-	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
-	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
-	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
-	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
-	type RoleResult struct {
-		RoleName string
-	}
-	var dbRoles []RoleResult
-	h.DB.Table("auth.user_role").
-		Select("r.role_name").
-		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
-		Where("auth.user_role.user_id = ?", user.UserID).
-		Scan(&dbRoles)
-	hasProfile := len(dbRoles) > 0
-
-	var linkReq models.LineLinkRequest
-	linkReq.UserID = user.UserID
-	linkReq.LineUserID = lineUserID
-	linkReq.DisplayName = lineName
-	if err := h.DB.Create(&linkReq).Error; err != nil {
-		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
-		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
-		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			c.JSON(http.StatusConflict, gin.H{"error": "บัญชี LINE นี้ถูกผูกกับบัญชีผู้ใช้ไปแล้ว"})
+	// auth.line_identity.user_id เป็น UNIQUE เช่นกัน (1 user เชื่อมได้แค่ 1
+	// บัญชี LINE) — เช็คก่อนว่า user ที่ login อยู่มี line_identity อยู่แล้วหรือยัง
+	var existing models.LineIdentity
+	err = h.DB.Where("user_id = ?", userID).First(&existing).Error
+	if err == nil {
+		if existing.LineUserID == lineUserID {
+			// เชื่อมกับ LINE บัญชีเดียวกันนี้ไปแล้ว — ไม่ใช่ error ถือว่าสำเร็จเลย
+			c.JSON(http.StatusOK, gin.H{
+				"already_linked": true,
+				"line_user_id":   lineUserID,
+				"message":        "บัญชีนี้เชื่อมกับ LINE นี้อยู่แล้ว",
+			})
 			return
 		}
+		c.JSON(http.StatusConflict, gin.H{"error": "บัญชีนี้ถูกผูกกับ LINE บัญชีอื่นไปแล้ว"})
+		return
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบสถานะการเชื่อมบัญชีได้"})
+		return
+	}
+
+	// ยังไม่มี line_identity ของ user นี้ — เช็คต่อว่า LINE user_id นี้ถูกผูก
+	// กับบัญชีอื่นไปแล้วหรือยัง (line_user_id ก็ unique เช่นกัน)
+	var conflict models.LineIdentity
+	if err := h.DB.Where("line_user_id = ?", lineUserID).First(&conflict).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "บัญชี LINE นี้ถูกผูกกับบัญชีผู้ใช้อื่นไปแล้ว"})
+		return
+	}
+
+	linkReq := models.LineIdentity{
+		UserID:      userID,
+		LineUserID:  lineUserID,
+		DisplayName: &lineName,
+	}
+	if err := h.DB.Create(&linkReq).Error; err != nil {
+		fmt.Printf("❌ LinkLineIdentity: DB.Create(auth.line_identity) error: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการผูกบัญชี LINE ได้"})
 		return
 	}
 
-	// เดิมฟังก์ชันนี้ verify แล้วจบเลย ไม่เคยสร้าง session/cookie ให้เลย ต่างจาก
-	// Login() — ทำให้ frontend เรียก endpoint ที่ต้อง auth ต่อ (เช่น
-	// GET /constants/province, district, subdistrict หรือแม้แต่ POST /farmers
-	// ตอนกดยืนยันลงทะเบียน) ไม่ได้เลย ได้ 401 กลับมาตลอด รายการเลยว่างเปล่า
-	// ทุกครั้งไม่ว่าจะพิมพ์ค้นหาอะไรก็ตาม — ต้อง set cookie แบบเดียวกับ Login()
-	// ตรงนี้เพื่อให้ session ใช้งานต่อได้จริงหลังเชื่อมบัญชี LINE สำเร็จ
-	jwtName := os.Getenv("JWT_NAME")
-	if jwtName == "" {
-		jwtName = "cocoa_mobile_jwt"
-	}
-	token, maxAge, err := GenerateToken(user.UserID, user.Username)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถสร้าง session ได้"})
-		return
-	}
-	c.SetCookie(jwtName, token, maxAge, "/", "", false, true)
-
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":      user.UserID.String(),
-		"line_user_id": lineUserID,
-		"has_profile":  hasProfile,
-		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"already_linked": false,
+		"line_user_id":   lineUserID,
+		"message":        "เชื่อมบัญชี LINE สำเร็จ",
 	})
 }
 

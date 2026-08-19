@@ -30,13 +30,3 @@ type RegisterRequest struct {
 	Email    *string `json:"email"`
 }
 
-type LineLinkRequest struct {
-	UserID   uuid.UUID `json:"user_id" binding:"required"`
-	LineUserID string `json:"line_user_id" binding:"required"`
-	DisplayName string `json:"display_name" binding:"required"`
-}
-
-func (LineLinkRequest) TableName() string {
-	return "auth.line_identity"
-}
-
