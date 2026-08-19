@@ -90,7 +90,11 @@ func mintTokenWithMethod(t *testing.T, method jwt.SigningMethod, key interface{}
 func TestJwtAuthMiddleware_NoCookieReturns401(t *testing.T) {
 	// No cookie at all — middleware reads c.Cookie(jwtName) and
 	// gets an http.ErrNoCookie. The response must 401 with the
-	// "Session expired" error string.
+	// "session expired" error string. (Was previously the raw
+	// concatenation "Session expired, please login again" + jwtName,
+	// e.g. "...againcocoa_mobile_jwt" with no separator and the cookie
+	// name leaked into a user-facing message — replaced with a proper
+	// Thai message matching the rest of the app's error copy.)
 	r, res := newEchoRouter()
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	w := httptest.NewRecorder()
@@ -99,8 +103,8 @@ func TestJwtAuthMiddleware_NoCookieReturns401(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d (body=%s)", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "Session expired") {
-		t.Errorf("want 'Session expired' in body, got %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "เซสชันหมดอายุ") {
+		t.Errorf("want 'เซสชันหมดอายุ' in body, got %s", w.Body.String())
 	}
 	if res.ran {
 		t.Error("downstream handler should not have run after abort")

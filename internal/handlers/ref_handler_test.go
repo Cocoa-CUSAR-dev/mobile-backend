@@ -250,7 +250,15 @@ func TestGetConstants_KnownKeyReachesDB(t *testing.T) {
 // the DB will return zero rows. With a nil DB we get 500, NOT a panic
 // at the lookup. This is the value of the guard.
 
-func TestGetConstants_UserScopedKeysDoNotPanicWithoutUserID(t *testing.T) {
+func TestGetConstants_UserScopedKeysRejectedWithoutUserID(t *testing.T) {
+	// /constants/:key now sits behind OptionalJwtAuthMiddleware (see main.go)
+	// instead of the blanket JwtAuthMiddleware, because it mixes public
+	// reference data (province, breed, ...) with per-user data (farm, hub,
+	// ...) behind the same handler. GetConstants itself must reject the
+	// per-user keys when no userID made it into context -- and, just as
+	// important, it must do that *before* ever reaching the DB (a nil-DB
+	// panic recovered into a 500 would also "not panic" but would mean the
+	// guard isn't actually short-circuiting).
 	cases := []string{"farm", "plot", "hub", "processing_station", "batch", "harvest"}
 	for _, key := range cases {
 		t.Run(key, func(t *testing.T) {
@@ -270,11 +278,8 @@ func TestGetConstants_UserScopedKeysDoNotPanicWithoutUserID(t *testing.T) {
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 
-			// The DB call will panic (nil DB). What matters is that
-			// it's the DB panic, not a uuid.UUID type-assertion panic
-			// at the context lookup.
-			if w.Code != http.StatusInternalServerError {
-				t.Errorf("key %q: want 500, got %d (body=%s)", key, w.Code, w.Body.String())
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("key %q: want 401, got %d (body=%s)", key, w.Code, w.Body.String())
 			}
 		})
 	}

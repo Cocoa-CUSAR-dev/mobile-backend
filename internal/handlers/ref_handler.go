@@ -13,12 +13,32 @@ type RefHandler struct {
 	DB *gorm.DB
 }
 
+// personalConstantKeys are the "key"s under this same route that resolve
+// against the caller's own userID (my farms, my hubs, my batches, ...) --
+// unlike the reference-data keys (province, breed, ...), these need a real
+// logged-in user, so they're rejected explicitly when OptionalJwtAuthMiddleware
+// didn't find a valid session (see main.go for why this route isn't behind
+// the blanket JwtAuthMiddleware).
+var personalConstantKeys = map[string]bool{
+	"farm":                true,
+	"plot":                true,
+	"hub":                 true,
+	"processing_station":  true,
+	"batch":               true,
+	"harvest":             true,
+}
+
 func (h *RefHandler) GetConstants(c *gin.Context) {
 	key := c.Param("key")
 
 	// ดึง userID จาก Context (กรณีต้องการข้อมูลที่เป็นของตนเอง)
-	val, _ := c.Get("userID")
+	val, authenticated := c.Get("userID")
 	userID, _ := val.(uuid.UUID)
+
+	if personalConstantKeys[key] && !authenticated {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่"})
+		return
+	}
 
 	var data interface{}
 	var err error

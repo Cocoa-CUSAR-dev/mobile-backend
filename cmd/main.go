@@ -76,6 +76,15 @@ func main() {
 		public.POST("/liff/verify", authHandler.VerifyLiffToken)
 	}
 
+	// /constants/:key mixes genuinely public reference data (province,
+	// breed, ...) with per-user data (farm, hub, batch, ...) behind the same
+	// handler -- OptionalJwtAuthMiddleware sets userID when a valid session
+	// cookie is present but never rejects the request outright; GetConstants
+	// itself rejects only the cases that actually need a logged-in user.
+	// Kept outside the strict "protected" group below (and off /public) so
+	// the URL the frontend already calls, /constants/:key, doesn't change.
+	r.GET("/constants/:key", middleware.OptionalJwtAuthMiddleware(), refHandler.GetConstants)
+
 	// --- Protected Routes (ต้องผ่าน JWT) ---
 	protected := r.Group("/")
 	protected.Use(middleware.JwtAuthMiddleware())
@@ -83,7 +92,6 @@ func main() {
 		// --- 0. อื่นๆ --
 		protected.GET("/auth/me", authHandler.GetMe)
 		protected.POST("/line/link", authHandler.LinkLineIdentity)
-		protected.GET("/constants/:key", refHandler.GetConstants)
 		// --- 1. เกษตรกร (Agriculture) ---
 		protected.POST("/farmers", agricultureHandler.RegisterFarmerProfile)
 		protected.POST("/farms", agricultureHandler.RegisterFarm)
