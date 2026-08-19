@@ -55,14 +55,15 @@ func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
-	// 1. ตรวจสอบว่า Login อยู่แล้วหรือไม่
+	// เดิมมีเช็ค "ถ้ามี cookie อยู่แล้วให้บล็อก login ซ้ำ" ตรงนี้ แต่ c.Cookie()
+	// เช็คแค่ว่ามี cookie ส่งมาไหม ไม่ได้ verify ว่า token ข้างในยังใช้ได้จริง —
+	// cookie ค้างจากรอบก่อน (หมดอายุ, มาจากตอน SameSite/Secure ยังตั้งไม่ถูก,
+	// ฯลฯ) เลยบล็อก login ทุกครั้งถัดไปแบบถาวร ทั้งที่ credentials ที่กรอกถูกต้อง
+	// — แย่เป็นพิเศษใน LIFF webview เพราะ user ไม่มีทางเคลียร์ cookie เองได้เลย
+	// login ด้วย credentials ที่ถูกต้องควรสำเร็จเสมอ แค่ออก cookie ใหม่ทับของเดิม
 	jwtName := os.Getenv("JWT_NAME")
 	if jwtName == "" {
 		jwtName = "cocoa_mobile_jwt"
-	}
-	if _, err := c.Cookie(jwtName); err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Already logged in"})
-		return
 	}
 
 	var req models.LoginRequest

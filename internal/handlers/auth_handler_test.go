@@ -89,7 +89,17 @@ func TestGenerateToken_DifferentUsersProduceDifferentTokens(t *testing.T) {
 
 // --- Login: pre-DB branches ------------------------------------------------
 
-func TestLogin_AlreadyLoggedIn(t *testing.T) {
+func TestLogin_ExistingCookieDoesNotBlockLogin(t *testing.T) {
+	// Login used to bail out early with "Already logged in" whenever a
+	// cookie was merely present (c.Cookie() only checks presence, never
+	// validity) -- so a stale/expired cookie permanently blocked every
+	// future login attempt with correct credentials, with no way for a
+	// user inside the LIFF webview to clear it themselves. That check is
+	// gone: an existing cookie must not change the outcome at all -- this
+	// request behaves identically to TestLogin_MissingBody's cookie-less
+	// one (same nil body, same resulting 400 "Invalid request format"),
+	// proving the request reaches normal validation instead of being
+	// short-circuited by cookie presence.
 	h := &AuthHandler{} // DB not used on this branch
 	r := gin.New()
 	r.POST("/login", h.Login)
@@ -106,8 +116,8 @@ func TestLogin_AlreadyLoggedIn(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("non-JSON body: %s", w.Body.String())
 	}
-	if body["error"] != "Already logged in" {
-		t.Errorf("want 'Already logged in', got %q", body["error"])
+	if body["error"] != "Invalid request format" {
+		t.Errorf("want 'Invalid request format' (same as no-cookie case), got %q", body["error"])
 	}
 }
 
