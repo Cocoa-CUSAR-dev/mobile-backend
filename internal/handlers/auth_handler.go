@@ -115,7 +115,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 5. Set Cookie
-	c.SetCookie(jwtName, token, maxAge, "/", "", false, true)
+	// SameSite=None + Secure=true จำเป็นสำหรับ cross-site request จริงๆ (frontend
+	// อยู่ github.io, backend อยู่ onrender.com คนละ origin กัน) — browser จะไม่
+	// ยอมส่ง cookie ที่ไม่มี SameSite=None กลับมาให้ endpoint คนละ origin เลย และ
+	// ถ้า SameSite=None แต่ Secure=false ก็จะโดน browser ปฏิเสธเก็บ cookie ทิ้ง
+	// เงียบๆ เหมือนกัน (ปัญหานี้ซ่อนอยู่มาตลอดเพราะ flow เดิมไม่เคยต้องเรียก
+	// protected endpoint ต่อจาก browser context เลย จนกระทั่ง flow ผูกบัญชี LINE
+	// ใหม่ที่ต้องเรียก /constants/province ฯลฯ ต่อจาก login ถึงเจอ)
+	c.SetSameSite(http.SameSiteNoneMode)
+	c.SetCookie(jwtName, token, maxAge, "/", "", true, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "ลงชื่อเข้าใช้สำเร็จ",
