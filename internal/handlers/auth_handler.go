@@ -61,6 +61,31 @@ func GenerateToken(userID uuid.UUID, username string, roles []string) (string, i
 	return tokenString, expirationSec, err
 }
 
+/*resolveRoles is the single source of truth for a user's roles — the
+auth.user_role / auth.role join. Login and GetMe used to each compute
+roles a different way (this join vs. checking for rows in the
+agriculture.farmer / processing.processor / processing.hub_collector
+profile tables), which could disagree: GetMe's old approach could never
+report a role like "admin" that only ever exists in auth.user_role, not
+in any profile table. Both now call this instead.*/
+func (h *AuthHandler) resolveRoles(userID uuid.UUID) []string {
+	type roleRow struct {
+		RoleName string
+	}
+	var rows []roleRow
+	h.DB.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", userID).
+		Scan(&rows)
+
+	roles := make([]string, 0, len(rows))
+	for _, row := range rows {
+		roles = append(roles, row.RoleName)
+	}
+	return roles
+}
+
 func (h *AuthHandler) Login(c *gin.Context) {
 	// 1. ตรวจสอบว่า Login อยู่แล้วหรือไม่
 	jwtName := os.Getenv("JWT_NAME")
@@ -92,27 +117,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// --- ส่วนการตรวจสอบ Roles และ Profile ---
-	var roles []string
-	var hasProfile bool
-
-	// 1. ตรวจสอบจาก Table หลัก (auth) เพื่อดูว่าเป็น Admin หรือ Researcher หรือไม่
-	// สมมติว่ามี table auth.user_role ที่เก็บ role_id และ user_id
-	type RoleResult struct {
-		RoleName string
-	}
-	var dbRoles []RoleResult
-	h.DB.Table("auth.user_role").
-		Select("r.role_name").
-		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
-		Where("auth.user_role.user_id = ?", user.UserID).
-		Scan(&dbRoles)
-
-	for _, r := range dbRoles {
-		roles = append(roles, r.RoleName)
-		hasProfile = true
-	}
-	// กำจัดค่าซ้ำใน slice (ถ้าจำเป็น) และจัดการ logic hasProfile
-	// ---------------------------------------
+	roles := h.resolveRoles(user.UserID)
+	hasProfile := len(roles) > 0
 
 	// 4. สร้าง JWT Token (ส่ง userID และ roles เข้าไปด้วยเพื่อให้ Middleware ตรวจสอบ Permission ได้)
 	token, maxAge, err := GenerateToken(user.UserID, user.Username, roles)
@@ -334,31 +340,8 @@ func (h *AuthHandler) GetMe(c *gin.Context) {
 		return
 	}
 
-	// แยกดึง Roles (เนื่องจาก 1 คนอาจมีหลาย Role)
-	var roles []string
-
-	// ตรวจสอบ Role จากการมีตัวตนในตาราง Profile เพิ่มเติม
-	var counts struct {
-		IsFarmer    bool
-		IsProcessor bool
-		IsCollector bool
-	}
-	h.DB.Raw(`
-        SELECT 
-            EXISTS(SELECT 1 FROM agriculture.farmer WHERE user_id = ?) as is_farmer,
-            EXISTS(SELECT 1 FROM processing.processor WHERE user_id = ?) as is_processor,
-            EXISTS(SELECT 1 FROM processing.hub_collector WHERE user_id = ?) as is_collector
-    `, userID, userID, userID).Scan(&counts)
-
-	if counts.IsFarmer {
-		roles = append(roles, "farmer")
-	}
-	if counts.IsProcessor {
-		roles = append(roles, "processor")
-	}
-	if counts.IsCollector {
-		roles = append(roles, "hub_collector")
-	}
+	// แยกดึง Roles ผ่านฟังก์ชันเดียวกับ Login เพื่อไม่ให้ role ไม่ตรงกันระหว่าง endpoint
+	roles := h.resolveRoles(userID)
 
 	response := gin.H{
 		"user_id": userID,

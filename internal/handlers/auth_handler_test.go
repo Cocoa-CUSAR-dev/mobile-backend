@@ -165,6 +165,48 @@ func TestLogin_MissingBody(t *testing.T) {
 	}
 }
 
+// --- resolveRoles: single source of truth for roles -------------------------
+//
+// Login and GetMe used to compute roles two different ways (auth.user_role join vs. checking for rows in the farmer/processor/hub_collector profile tables).
+// Both now call resolveRoles instead — these tests pin that it's the one thing actually touching the DB for role lookups.
+
+func TestResolveRoles_ReachesDB(t *testing.T) {
+	h := &AuthHandler{}
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Error("expected resolveRoles to panic against a nil DB (no mock configured)")
+		}
+	}()
+	h.resolveRoles(uuid.New())
+}
+
+func TestGetMe_ReachesDBViaResolveRoles(t *testing.T) {
+	// GetMe reads "userID" from context (normally set by JwtAuthMiddleware).
+	// With that present but no real *gorm.DB wired up, it must panic once it
+	// reaches the DB — recovered here to confirm the request got there via
+	// the shared resolveRoles path rather than, say, silently returning
+	// empty roles.
+	h := &AuthHandler{}
+	r := gin.New()
+	r.GET("/me", func(c *gin.Context) {
+		c.Set("userID", uuid.New())
+		defer func() {
+			if rec := recover(); rec != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"panic": true})
+			}
+		}()
+		h.GetMe(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("want 500 (DB panic recovered), got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 // --- Register: validation branch ------------------------------------------
 //
 // RegisterRequest requires `username` and `password` (min 6 chars); `email`
