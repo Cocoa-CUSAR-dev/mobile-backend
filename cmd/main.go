@@ -85,23 +85,30 @@ func main() {
 		protected.GET("/auth/me", authHandler.GetMe)
 		protected.GET("/constants/:key", refHandler.GetConstants)
 		// --- 1. เกษตรกร (Agriculture) ---
+		// RegisterFarmerProfile is the onboarding endpoint that GRANTS the
+		// "farmer" role (see agriculture_handler.go) — it must stay open to
+		// any authenticated user, not gated behind the role it hands out.
 		protected.POST("/farmers", agricultureHandler.RegisterFarmerProfile)
-		protected.POST("/farms", agricultureHandler.RegisterFarm)
-		protected.POST("/plots", agricultureHandler.RegisterPlot)
-		protected.GET("/farms", agricultureHandler.GetMyFarms)
-		protected.GET("/plots", agricultureHandler.GetMyPlots)
+		protected.POST("/farms", middleware.RequireRole("farmer"), agricultureHandler.RegisterFarm)
+		protected.POST("/plots", middleware.RequireRole("farmer"), agricultureHandler.RegisterPlot)
+		protected.GET("/farms", middleware.RequireRole("farmer"), agricultureHandler.GetMyFarms)
+		protected.GET("/plots", middleware.RequireRole("farmer"), agricultureHandler.GetMyPlots)
 
 		// --- 2. หน่วยรวบรวม (Collection) ---
+		// RegisterHubCollector grants the "hub_collector" role — same
+		// onboarding exception as RegisterFarmerProfile above.
 		protected.POST("/hub_collectors", collectionHandler.RegisterHubCollector)
-		protected.POST("/hubs", collectionHandler.RegisterHub)
-		protected.GET("/hubs", collectionHandler.GetMyHub) // มาพร้อม harvests ในตัว
-		protected.GET("/harvests", collectionHandler.GetMyHarvests)
+		protected.POST("/hubs", middleware.RequireRole("hub_collector"), collectionHandler.RegisterHub)
+		protected.GET("/hubs", middleware.RequireRole("hub_collector"), collectionHandler.GetMyHub) // มาพร้อม harvests ในตัว
+		protected.GET("/harvests", middleware.RequireRole("hub_collector"), collectionHandler.GetMyHarvests)
 
 		// --- 3. การแปรรูป (Processing) ---
+		// RegisterProcessor grants the "processor" role — same onboarding
+		// exception as above.
 		protected.POST("/processors", processingHandler.RegisterProcessor)
-		protected.POST("/processing_stations", processingHandler.RegisterStation)
-		protected.GET("/processing_stations", processingHandler.GetMyProcessingStation) // มาพร้อม batches ในตัว
-		protected.GET("/batches", processingHandler.GetMyBatches)
+		protected.POST("/processing_stations", middleware.RequireRole("processor"), processingHandler.RegisterStation)
+		protected.GET("/processing_stations", middleware.RequireRole("processor"), processingHandler.GetMyProcessingStation) // มาพร้อม batches ในตัว
+		protected.GET("/batches", middleware.RequireRole("processor"), processingHandler.GetMyBatches)
 
 		// --- 4. งาน (Tasks/Forms) ---
 		protected.GET("/tasks", formHandler.GetTasks)
