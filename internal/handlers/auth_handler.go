@@ -41,7 +41,8 @@ func GenerateToken(userID uuid.UUID, username string, roles []string) (string, i
 	expirationSec, _ := strconv.Atoi(os.Getenv("JWT_ACCESS_TOKEN_EXPIRATION"))
 	expirationTime := time.Duration(expirationSec) * time.Second
 
-	// roles is nil for callers that don't have any yet normalize to [] so the "roles"
+	// roles is nil for callers that don't have any yet (e.g. a brand-new
+	// account before any profile exists) — normalize to [] so the "roles"
 	// claim always decodes as a JSON array, never `null`.
 	if roles == nil {
 		roles = []string{}
