@@ -44,6 +44,23 @@ func JwtAuthMiddleware() gin.HandlerFunc {
 			}
 			// เก็บ userID ไว้ใน context เป็น type uuid.UUID
 			c.Set("userID", userID)
+
+			// ดึง roles จาก claims ให้ handler/middleware ถัดไป (RBAC)
+			// jwt.MapClaims decode ผ่าน encoding/json ทำให้ JSON array กลายเป็น []interface{} เสมอ ต้องแปลงเป็น []string เอง 
+			// Token เก่าที่ออกก่อนมี claim นี้ (หรือ claim ที่รูปแบบผิด) ถือว่าไม่มี role แทนที่
+			// จะ reject ทั้ง token userID ยัง valid อยู่, แค่ไม่มีสิทธิ์ใดๆ
+			var roles []string
+			if rawRoles, ok := claims["roles"].([]interface{}); ok {
+				for _, r := range rawRoles {
+					if roleStr, ok := r.(string); ok {
+						roles = append(roles, roleStr)
+					}
+				}
+			}
+			if roles == nil {
+				roles = []string{}
+			}
+			c.Set("roles", roles)
 		}
 
 		// stash the raw token too, so handlers can forward it to other services
