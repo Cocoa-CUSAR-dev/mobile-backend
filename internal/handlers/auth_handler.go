@@ -67,13 +67,17 @@ roles a different way (this join vs. checking for rows in the
 agriculture.farmer / processing.processor / processing.hub_collector
 profile tables), which could disagree: GetMe's old approach could never
 report a role like "admin" that only ever exists in auth.user_role, not
-in any profile table. Both now call this instead.*/
-func (h *AuthHandler) resolveRoles(userID uuid.UUID) []string {
+in any profile table. Both now call this instead.
+
+Package-level (not a method) so any handler with a *gorm.DB can call it —
+reissueTokenCookie below needs it from AgricultureHandler/CollectionHandler/
+ProcessingHandler, none of which are AuthHandler.*/
+func resolveRoles(db *gorm.DB, userID uuid.UUID) []string {
 	type roleRow struct {
 		RoleName string
 	}
 	var rows []roleRow
-	h.DB.Table("auth.user_role").
+	db.Table("auth.user_role").
 		Select("r.role_name").
 		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
 		Where("auth.user_role.user_id = ?", userID).
@@ -84,6 +88,45 @@ func (h *AuthHandler) resolveRoles(userID uuid.UUID) []string {
 		roles = append(roles, row.RoleName)
 	}
 	return roles
+}
+
+func (h *AuthHandler) resolveRoles(userID uuid.UUID) []string {
+	return resolveRoles(h.DB, userID)
+}
+
+// reissueTokenCookie re-signs a fresh JWT for userID — picking up whatever
+// roles they have *right now* — and overwrites the session cookie with it.
+// JWTs are stateless: once issued, nothing about a token's claims can
+// change until it's replaced. Without this, a role granted by (e.g.)
+// RegisterFarmerProfile is invisible to RequireRole until the user logs
+// out and back in, because the cookie they're still holding was signed
+// before the role existed. Call this right after any DB change that grants
+// a role, using the same request's cookie-setting mechanism Login uses.
+//
+// This does not address the reverse case (a role being revoked while an
+// old token is still valid) — there's currently no endpoint anywhere in
+// this codebase that revokes a role, so that side of the problem is
+// latent, not active. When one is added, it should call this too; until
+// then, the token's normal expiry (JWT_ACCESS_TOKEN_EXPIRATION) is the
+// only bound on how long a revoked role stays usable.
+func reissueTokenCookie(c *gin.Context, db *gorm.DB, userID uuid.UUID) error {
+	var user models.UserAccount
+	if err := db.Table("auth.user_account").Where("user_id = ?", userID).First(&user).Error; err != nil {
+		return err
+	}
+
+	roles := resolveRoles(db, userID)
+	token, maxAge, err := GenerateToken(user.UserID, user.Username, roles)
+	if err != nil {
+		return err
+	}
+
+	jwtName := os.Getenv("JWT_NAME")
+	if jwtName == "" {
+		jwtName = "cocoa_mobile_jwt"
+	}
+	c.SetCookie(jwtName, token, maxAge, "/", "", false, true)
+	return nil
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {

@@ -177,6 +177,13 @@ func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 		return
 	}
 
+	// Re-sign the session cookie so it carries the "farmer" role that was
+	// just granted — otherwise the caller's next request (e.g. POST /farms,
+	// which requires "farmer") would 403 against their now-stale old token.
+	// Best-effort: if this fails, the profile was still created successfully;
+	// worst case the user has to log out/in to pick up the new role.
+	_ = reissueTokenCookie(c, h.DB, userID)
+
 	// 5. Response กลับ
 	c.JSON(http.StatusOK, req)
 }

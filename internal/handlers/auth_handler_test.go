@@ -207,6 +207,37 @@ func TestGetMe_ReachesDBViaResolveRoles(t *testing.T) {
 	}
 }
 
+// --- reissueTokenCookie: stale role claims (#7 final sub-issue) ------------
+//
+// Roles are only ever signed into the JWT when a token is issued (Login).
+// A role granted afterwards (e.g. RegisterFarmerProfile inserting into
+// auth.user_role) doesn't retroactively change a cookie the caller is
+// already holding. reissueTokenCookie re-signs it on the spot so the very
+// next request already carries the new role.
+
+func TestReissueTokenCookie_ReachesDB(t *testing.T) {
+	// reissueTokenCookie looks the user up by ID before re-signing — with
+	// no real *gorm.DB wired up, that nil-panics. Pins that it actually
+	// touches the DB rather than silently no-op'ing.
+	r := gin.New()
+	r.GET("/x", func(c *gin.Context) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"panic": true})
+			}
+		}()
+		_ = reissueTokenCookie(c, (&AuthHandler{}).DB, uuid.New())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("want 500 (DB panic recovered), got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 // --- Register: validation branch ------------------------------------------
 //
 // RegisterRequest requires `username` and `password` (min 6 chars); `email`
