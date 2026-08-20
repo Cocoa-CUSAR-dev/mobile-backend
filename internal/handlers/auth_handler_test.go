@@ -30,8 +30,9 @@ func TestMain(m *testing.M) {
 func TestGenerateToken_SignedAndDecodable(t *testing.T) {
 	uid := uuid.New()
 	uname := "0812345678"
+	roles := []string{"farmer", "hub_collector"}
 
-	tokenStr, maxAge, err := GenerateToken(uid, uname)
+	tokenStr, maxAge, err := GenerateToken(uid, uname, roles)
 	if err != nil {
 		t.Fatalf("GenerateToken returned error: %v", err)
 	}
@@ -63,6 +64,19 @@ func TestGenerateToken_SignedAndDecodable(t *testing.T) {
 		t.Errorf("claim user_id: want %q, got %q", uid.String(), gotUID)
 	}
 
+	gotRolesRaw, ok := claims["roles"].([]interface{})
+	if !ok {
+		t.Fatalf("claim roles: want []interface{}, got %T (%v)", claims["roles"], claims["roles"])
+	}
+	if len(gotRolesRaw) != len(roles) {
+		t.Fatalf("claim roles: want %v, got %v", roles, gotRolesRaw)
+	}
+	for i, r := range roles {
+		if gotRolesRaw[i] != r {
+			t.Errorf("claim roles[%d]: want %q, got %v", i, r, gotRolesRaw[i])
+		}
+	}
+
 	iat, _ := claims["iat"].(float64)
 	exp, _ := claims["exp"].(float64)
 	if exp-iat != 3600 {
@@ -73,12 +87,38 @@ func TestGenerateToken_SignedAndDecodable(t *testing.T) {
 	}
 }
 
-func TestGenerateToken_DifferentUsersProduceDifferentTokens(t *testing.T) {
-	a, _, err := GenerateToken(uuid.New(), "user-a")
+func TestGenerateToken_NilRolesEncodesAsEmptyArray(t *testing.T) {
+	// A user with no roles yet (e.g. registered but no profile created)
+	// must still get a decodable "roles" claim — nil would encode as JSON
+	// `null`, which callers would have to special-case.
+	tokenStr, _, err := GenerateToken(uuid.New(), "0899999999", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, err := GenerateToken(uuid.New(), "user-b")
+
+	parsed, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		return []byte(os.Getenv("JWT_KEY")), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := parsed.Claims.(jwt.MapClaims)
+
+	gotRoles, ok := claims["roles"].([]interface{})
+	if !ok {
+		t.Fatalf("claim roles: want []interface{}, got %T (%v)", claims["roles"], claims["roles"])
+	}
+	if len(gotRoles) != 0 {
+		t.Errorf("expected empty roles slice, got %v", gotRoles)
+	}
+}
+
+func TestGenerateToken_DifferentUsersProduceDifferentTokens(t *testing.T) {
+	a, _, err := GenerateToken(uuid.New(), "user-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := GenerateToken(uuid.New(), "user-b", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
