@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: go-server-mobile
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: starter
+    autoDeployTrigger: checksPass
+    healthCheckPath: /public/test
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 5432
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSLMODE
+        value: require
+      - key: PORT
+        value: 8080
+      - key: GIN_MODE
+        value: release
+      - key: JWT_KEY
+        sync: false
+      - key: JWT_NAME
+        value: cocoa_mobile_jwt
+      - key: JWT_ACCESS_TOKEN_EXPIRATION
+        value: 3600
+      - key: JWT_REFRESH_TOKEN_EXPIRATION
+        value: 86400
