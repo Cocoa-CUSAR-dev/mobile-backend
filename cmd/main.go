@@ -77,11 +77,6 @@ func main() {
 		public.POST("/liff/link", authHandler.LinkLineAccount)
 	}
 
-	// Health check -- no auth, no /public prefix, matching the chatbot
-	// service's own GET /health (see chatbot/src/main.py) so every
-	// first-party service in this project answers the same probe path.
-	// Deployment tooling (Docker/host healthchecks, uptime monitors) hits
-	// this to know the process is up and serving requests.
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
@@ -129,11 +124,6 @@ func main() {
 		service.POST("/tasks", formHandler.SubmitTaskForUser)
 	}
 
-	// 5. Start Server
-	// PORT was already documented in .env.sample but never actually read --
-	// the server always bound :8080 regardless. Deployment platforms that
-	// assign their own port (Render, Railway, etc.) need this to be
-	// configurable; default keeps local dev working with no .env changes.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
