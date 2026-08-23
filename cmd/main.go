@@ -69,6 +69,10 @@ func main() {
 	{
 		public.POST("/login", authHandler.Login)
 		public.POST("/register", authHandler.Register)
+		// GO-3: exchanges a still-valid refresh token for a new access
+		// token, public since the whole point is to work once the access
+		// token itself has already expired.
+		public.POST("/refresh", authHandler.RefreshToken)
 		public.GET("/test", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "hello world"})
 		})
