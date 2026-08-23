@@ -137,33 +137,39 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 
 	var tasks []map[string]interface{}
 
+	// GO-6: this bypasses GORM's query builder (raw SQL + Scan), so the
+	// shared Paginate scope doesn't apply -- LIMIT/OFFSET appended directly
+	// instead, task_id added as an ORDER BY tiebreaker for stable paging.
+	page, size := paginationParams(c)
+
 	query := `
-		SELECT 
-			t.task_id, 
-			t.title, 
-			t.description, 
-			t.open_at, 
+		SELECT
+			t.task_id,
+			t.title,
+			t.description,
+			t.open_at,
 			t.close_at,
 			tf.handler,
-			CASE 
+			CASE
 				WHEN r.response_id IS NOT NULL THEN 'COMPLETED'
 				WHEN NOW() > t.close_at THEN 'OVERDUE'
 				ELSE 'NOT_STARTED'
 			END AS status
 		FROM form.task t
-		LEFT JOIN form.task_form tf 
+		LEFT JOIN form.task_form tf
 			ON t.task_id = tf.task_id
-		LEFT JOIN form.response r 
-			ON t.task_id = r.task_log_id 
+		LEFT JOIN form.response r
+			ON t.task_id = r.task_log_id
 			AND r.user_id = ?
 		WHERE (
 			NULLIF(?, '')::date IS NULL
 			OR DATE(t.open_at) = NULLIF(?, '')::date
 		)
-		ORDER BY t.open_at DESC
+		ORDER BY t.open_at DESC, t.task_id
+		LIMIT ? OFFSET ?
 	`
 
-	if err := h.DB.Raw(query, userID, date, date).Scan(&tasks).Error; err != nil {
+	if err := h.DB.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงข้อมูลงานได้"})
 		return
 	}
