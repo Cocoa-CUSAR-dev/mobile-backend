@@ -421,6 +421,9 @@ func (h *FormHandler) GetTaskResponse(c *gin.Context) {
 }
 
 // 4. PUT /tasks — แก้ไขงาน (ดึง taskId จาก Payload)
+// Uses the same validateSubmission gate defined above submitAnswerForUser
+// (originally landed via #45) — this used to be its own duplicate copy
+// before the two branches merged.
 func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 	val, _ := c.Get("userID")
 	userID := val.(uuid.UUID)
@@ -433,6 +436,29 @@ func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 
 	// แทรก task_id เข้าไปใน answer ใหม่
 	req.Answer["task_id"] = req.TaskID
+
+	var taskForm struct {
+		FormID uuid.UUID `gorm:"column:form_id"`
+	}
+	if err := h.DB.Table("form.task_form").Select("form_id").Where("task_id = ?", req.TaskID).First(&taskForm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบแบบฟอร์มสำหรับงานที่ระบุ"})
+		return
+	}
+
+	// Gate: nothing below this point runs until the answer passes.
+	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, req.Answer)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
+		return
+	}
+	if len(fieldErrs) > 0 {
+		details := make([]string, len(fieldErrs))
+		for i, fe := range fieldErrs {
+			details[i] = fe.Error()
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ข้อมูลไม่ผ่านการตรวจสอบ", "details": details})
+		return
+	}
 
 	result := h.DB.Table("form.response").
 		Where("task_log_id = ? AND user_id = ?", req.TaskID, userID).
