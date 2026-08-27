@@ -31,6 +31,10 @@ type AuthHandler struct {
 // LINE endpoint would hang this request indefinitely.
 var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
+// lineVerifyURL is a var, not a literal in verifyLineIDToken, so tests can
+// point it at a fake server instead of hitting api.line.me for real.
+var lineVerifyURL = "https://api.line.me/oauth2/v2.1/verify"
+
 func GenerateToken(userID uuid.UUID, username string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
 	// JWT_ACCESS_TOKEN_EXPIRATION is in SECONDS (matches the env var name
@@ -139,7 +143,7 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 		"id_token":  {idToken},
 		"client_id": {channelID},
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://api.line.me/oauth2/v2.1/verify", strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, lineVerifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", "", fmt.Errorf("สร้างคำขอตรวจสอบ LINE token ไม่สำเร็จ: %w", err)
 	}
@@ -165,6 +169,12 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", "", fmt.Errorf("อ่าน payload จาก LINE ไม่สำเร็จ")
+	}
+	// LINE's contract is that a 200 always carries a non-empty sub -- but if
+	// that's ever not true, an empty string would otherwise sail through as
+	// a "verified" line_user_id and end up written to auth.line_identity.
+	if payload.Sub == "" {
+		return "", "", fmt.Errorf("LINE ไม่ได้ส่ง sub (line_user_id) กลับมา")
 	}
 	return payload.Sub, payload.Name, nil
 }
