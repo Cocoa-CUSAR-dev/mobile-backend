@@ -486,6 +486,23 @@ func TestVerifyLineIDToken_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestVerifyLineIDToken_EmptySubIsRejected(t *testing.T) {
+	// A 200 with no/blank sub used to sail through as a "verified" empty
+	// line_user_id. LINE's contract guarantees sub on a real 200, but
+	// nothing before this checked that guarantee actually held.
+	setLineChannelID(t, "test-channel-id")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sub":"","name":"Ghost User"}`))
+	}))
+	defer ts.Close()
+	swapLineAPIClient(t, ts)
+
+	if _, _, err := verifyLineIDToken("any-token"); err == nil {
+		t.Fatal("expected error when LINE's response has an empty sub, got nil")
+	}
+}
+
 func TestVerifyLineIDToken_MissingChannelID(t *testing.T) {
 	setLineChannelID(t, "")
 
