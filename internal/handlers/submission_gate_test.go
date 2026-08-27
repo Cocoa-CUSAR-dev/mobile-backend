@@ -9,11 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// This is the gate #54 asked for, now also in front of UpdateTaskResponse's
-// write. These tests don't touch a DB — fetchSchema is faked — so a pass
-// here means the gate logic is correct independent of whatever
-// h.DB.Table("form.response").Updates(...) does afterward (that part still
-// needs a real DB, same as the rest of this file's DB-touching branches).
+// validateSubmission is the same function guarding UpdateTaskResponse's
+// write, so these tests just exercise it directly — fetchSchema is a fake,
+// no DB or HTTP anywhere. Whether h.DB.Table("form.response").Updates(...)
+// actually runs afterward is a separate question this file still can't
+// cover without a real database (same limitation as the rest of the
+// UpdateTaskResponse tests above).
 
 func TestValidateSubmission_PassesCleanAnswerThrough(t *testing.T) {
 	formID := uuid.New()
@@ -55,10 +56,9 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 		t.Fatal("want a field error for a non-numeric quantity_kg, got none")
 	}
 
-	// Both SubmitTask/SubmitTaskForUser and UpdateTaskResponse only reach
-	// their DB write when len(errs) == 0 — mirror that branch here so a
-	// regression that drops the early return shows up as a call to
-	// fakeDBWrite.
+	// UpdateTaskResponse only reaches its DB write when len(errs) == 0 —
+	// mirrored here so dropping that early return would show up as
+	// fakeDBWrite getting called.
 	if len(errs) == 0 {
 		fakeDBWrite()
 	}
@@ -68,9 +68,8 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 }
 
 func TestValidateSubmission_SchemaFetchFailureFailsClosed(t *testing.T) {
-	// Kotlin down, bad service key, whatever — if the schema can't be
-	// fetched, there's nothing to validate against, so this must come back
-	// as an error rather than silently letting the answer through.
+	// If Kotlin's unreachable or the key's wrong, there's nothing to check
+	// the answer against — has to come back as an error, not a pass.
 	fetchSchema := func(uuid.UUID) (validation.FormSchema, error) {
 		return validation.FormSchema{}, errors.New("upstream unavailable")
 	}

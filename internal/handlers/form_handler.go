@@ -387,15 +387,14 @@ func (h *FormHandler) GetTaskResponse(c *gin.Context) {
 	c.JSON(http.StatusOK, answer)
 }
 
-// 4. PUT /tasks — แก้ไขงาน (ดึง taskId จาก Payload)
-// validateSubmission is the #54 gate: fetch formID's schema via fetchSchema
-// and check answer against it before anything is allowed to write. A
-// non-nil error means the schema itself couldn't be fetched (Kotlin down,
-// bad service key, etc.) — treated the same as a failed validation, not
-// waved through, since there's no schema to confirm the answer is safe.
+// validateSubmission is the #54 gate — it won't let anything through that
+// doesn't match formID's schema. If fetchSchema itself fails (Kotlin's
+// down, key's wrong, doesn't matter why), that counts as a rejection too —
+// no schema means no way to tell if the answer's actually fine.
 //
-// (Also added on feat/NN-db-write-gate for SubmitTask/SubmitTaskForUser —
-// expect to dedupe one copy when these two branches merge.)
+// Same function also lives on feat/NN-db-write-gate for the other write
+// path (SubmitTask/SubmitTaskForUser). One copy has to go when these two
+// branches merge.
 func validateSubmission(
 	fetchSchema func(uuid.UUID) (validation.FormSchema, error),
 	formID uuid.UUID,
@@ -408,6 +407,7 @@ func validateSubmission(
 	return validation.ValidateAnswer(schema, answer), nil
 }
 
+// 4. PUT /tasks — แก้ไขงาน (ดึง taskId จาก Payload)
 func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 	val, _ := c.Get("userID")
 	userID := val.(uuid.UUID)
