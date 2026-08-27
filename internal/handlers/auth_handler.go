@@ -31,6 +31,10 @@ type AuthHandler struct {
 // LINE endpoint would hang this request indefinitely.
 var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
+// lineVerifyURL is a var, not a literal in verifyLineIDToken, so tests can
+// point it at a fake server instead of hitting api.line.me for real.
+var lineVerifyURL = "https://api.line.me/oauth2/v2.1/verify"
+
 func GenerateToken(userID uuid.UUID, username string, roles []string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
 	// JWT_ACCESS_TOKEN_EXPIRATION is in SECONDS (matches the env var name
@@ -195,7 +199,7 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 		"id_token":  {idToken},
 		"client_id": {channelID},
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://api.line.me/oauth2/v2.1/verify", strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, lineVerifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", "", fmt.Errorf("สร้างคำขอตรวจสอบ LINE token ไม่สำเร็จ: %w", err)
 	}
@@ -221,6 +225,12 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", "", fmt.Errorf("อ่าน payload จาก LINE ไม่สำเร็จ")
+	}
+	// LINE's contract is that a 200 always carries a non-empty sub -- but if
+	// that's ever not true, an empty string would otherwise sail through as
+	// a "verified" line_user_id and end up written to auth.line_identity.
+	if payload.Sub == "" {
+		return "", "", fmt.Errorf("LINE ไม่ได้ส่ง sub (line_user_id) กลับมา")
 	}
 	return payload.Sub, payload.Name, nil
 }
@@ -284,11 +294,30 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
+	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
+	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
+	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
+	type RoleResult struct {
+		RoleName string
+	}
+	var dbRoles []RoleResult
+	h.DB.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", user.UserID).
+		Scan(&dbRoles)
+	hasProfile := len(dbRoles) > 0
+
 	var linkReq models.LineLinkRequest
 	linkReq.UserID = user.UserID
 	linkReq.LineUserID = lineUserID
 	linkReq.DisplayName = lineName
 	if err := h.DB.Create(&linkReq).Error; err != nil {
+		// log error จริงไว้ (ก่อนหน้านี้ไม่มีเลย ทำให้ debug ไม่ได้ว่าทำไม
+		// insert พังจริงๆ — ข้อความที่ตอบกลับ user เป็นแค่สรุปแบบเป็นมิตร)
+		fmt.Printf("❌ LinkLineAccount: DB.Create(auth.line_identity) error: %v\n", err)
+
 		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
 		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
 		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
@@ -301,9 +330,10 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.UserID.String(),
+		"user_id":      user.UserID.String(),
 		"line_user_id": lineUserID,
-		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"has_profile":  hasProfile,
+		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 

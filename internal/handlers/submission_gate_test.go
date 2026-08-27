@@ -9,16 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// validateSubmission is the same function guarding UpdateTaskResponse's
-// write, so these tests just exercise it directly — fetchSchema is a fake,
-// no DB or HTTP anywhere. Whether h.DB.Table("form.response").Updates(...)
-// actually runs afterward is a separate question this file still can't
-// cover without a real database (same limitation as the rest of the
-// UpdateTaskResponse tests above).
-// validateSubmission has to come back clean before submitAnswerForUser
-// opens a transaction — that's the whole gate. fetchSchema is faked below
-// so none of this touches a DB or Kotlin; whether h.DB.Transaction itself
-// behaves is a separate, DB-dependent question these tests don't cover.
+// validateSubmission is the one gate guarding both write paths —
+// submitAnswerForUser's transaction and UpdateTaskResponse's update — so
+// these tests just exercise it directly. fetchSchema is a fake below; no DB
+// or HTTP anywhere. Whether the actual DB write behaves correctly afterward
+// is a separate, DB-dependent question these tests don't cover (same
+// limitation as the rest of this package's DB-touching branches).
 
 func TestValidateSubmission_PassesCleanAnswerThrough(t *testing.T) {
 	formID := uuid.New()
@@ -60,12 +56,9 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 		t.Fatal("want a field error for a non-numeric quantity_kg, got none")
 	}
 
-	// UpdateTaskResponse only reaches its DB write when len(errs) == 0 —
-	// mirrored here so dropping that early return would show up as
-	// fakeDBWrite getting called.
-	// submitAnswerForUser only opens the transaction when len(errs) == 0;
-	// copying that check here means a dropped early-return would show up
-	// as fakeDBWrite firing.
+	// Both submitAnswerForUser and UpdateTaskResponse only reach their DB
+	// write when len(errs) == 0 — mirrored here so dropping that early
+	// return would show up as fakeDBWrite getting called.
 	if len(errs) == 0 {
 		fakeDBWrite()
 	}
@@ -77,8 +70,6 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 func TestValidateSubmission_SchemaFetchFailureFailsClosed(t *testing.T) {
 	// If Kotlin's unreachable or the key's wrong, there's nothing to check
 	// the answer against — has to come back as an error, not a pass.
-	// no schema to check against means no way to know the answer's safe —
-	// this has to fail, not pass by default.
 	fetchSchema := func(uuid.UUID) (validation.FormSchema, error) {
 		return validation.FormSchema{}, errors.New("upstream unavailable")
 	}

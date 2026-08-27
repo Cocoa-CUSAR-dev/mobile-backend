@@ -420,27 +420,10 @@ func (h *FormHandler) GetTaskResponse(c *gin.Context) {
 	c.JSON(http.StatusOK, answer)
 }
 
-// validateSubmission is the #54 gate — it won't let anything through that
-// doesn't match formID's schema. If fetchSchema itself fails (Kotlin's
-// down, key's wrong, doesn't matter why), that counts as a rejection too —
-// no schema means no way to tell if the answer's actually fine.
-//
-// Same function also lives on feat/NN-db-write-gate for the other write
-// path (SubmitTask/SubmitTaskForUser). One copy has to go when these two
-// branches merge.
-func validateSubmission(
-	fetchSchema func(uuid.UUID) (validation.FormSchema, error),
-	formID uuid.UUID,
-	answer map[string]interface{},
-) ([]validation.FieldError, error) {
-	schema, err := fetchSchema(formID)
-	if err != nil {
-		return nil, err
-	}
-	return validation.ValidateAnswer(schema, answer), nil
-}
-
 // 4. PUT /tasks — แก้ไขงาน (ดึง taskId จาก Payload)
+// Uses the same validateSubmission gate defined above submitAnswerForUser
+// (originally landed via #45) — this used to be its own duplicate copy
+// before the two branches merged.
 func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 	val, _ := c.Get("userID")
 	userID := val.(uuid.UUID)
