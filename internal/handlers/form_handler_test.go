@@ -150,6 +150,117 @@ func TestSubmitTask_EmptyBody(t *testing.T) {
 	}
 }
 
+// --- SubmitTaskForUser: pre-DB branches ------------------------------------
+//
+// Unlike SubmitTask, this handler reads userID from the request body, not
+// gin context — so there's no "missing userID panics" case to cover here.
+// The chat.conversation existence check (the actual new security boundary)
+// touches the DB and isn't covered by these tests, same as dissectAnswer's
+// real INSERT isn't — this repo's tests only cover pre-DB branches (see
+// TestDissectAnswer_UnsupportedHandlerReturnsError below for the one
+// DB-independent case). It's covered by manual verification against a real
+// DB instead — see the PR description.
+
+func TestSubmitTaskForUser_InvalidJSON(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{not json`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingUserID(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"task_id":"t1","answer":{"q1":"a"}}`)) // no user_id
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingTaskID(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"`+uuid.New().String()+`","answer":{"q1":"a"}}`)) // no task_id
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MissingAnswer(t *testing.T) {
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"`+uuid.New().String()+`","task_id":"t1"}`)) // no answer
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUser_MalformedUserIDRejectedBeforeDB(t *testing.T) {
+	// "not-a-uuid" passes binding:"required" (it's a non-empty string) but
+	// must fail uuid.Parse before any DB call happens.
+	h := &FormHandler{}
+	r := gin.New()
+	r.POST("/service/tasks", h.SubmitTaskForUser)
+
+	req := httptest.NewRequest(http.MethodPost, "/service/tasks",
+		strings.NewReader(`{"user_id":"not-a-uuid","task_id":"t1","answer":{"q1":"a"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for malformed user_id, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestSubmitTaskForUserRequest_JSONRoundTrip(t *testing.T) {
+	uid := uuid.New().String()
+	in := `{"user_id":"` + uid + `","task_id":"task-123","answer":{"q1":"เก็บเกี่ยว"}}`
+	var req SubmitTaskForUserRequest
+	if err := json.Unmarshal([]byte(in), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.UserID != uid {
+		t.Errorf("user_id: want %s, got %q", uid, req.UserID)
+	}
+	if req.TaskID != "task-123" {
+		t.Errorf("task_id: want task-123, got %q", req.TaskID)
+	}
+	if v, ok := req.Answer["q1"].(string); !ok || v != "เก็บเกี่ยว" {
+		t.Errorf("answer.q1: want เก็บเกี่ยว, got %v", req.Answer["q1"])
+	}
+}
+
 // --- GetTaskResponse: pre-DB branches -------------------------------------
 
 func TestGetTaskResponse_MissingUserIDPanics(t *testing.T) {
@@ -336,14 +447,21 @@ func TestFilterKnownColumns_EmptyWhenNoMatch(t *testing.T) {
 
 func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
 	// Guards against typos/drift from the verified table in
-	// task-dissection-design.md — these 5 handlers have their own
-	// generated PK and are safe to dissect generically.
+	// task-dissection-design.md / chatbot-child-handler-design.md — all 10
+	// of these have their own generated PK (the original 5) or now get
+	// their parent ID resolved upstream by the chatbot's picker (the other
+	// 5), so both are safe to dissect generically.
 	want := map[string]string{
 		"farm_activity":            "agriculture.farm_activity",
 		"processing_record":        "processing.processing_record",
 		"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
 		"harvest":                  "collection.harvest",
 		"batch":                    "processing.batch",
+		"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
+		"farm_activity_chemical":   "agriculture.farm_activity_chemical",
+		"harvest_grade_detail":     "collection.harvest_grade_detail",
+		"fermentation_batch":       "processing.fermentation_batch",
+		"drying_batch":             "processing.drying_batch",
 	}
 	if len(standaloneHandlerTables) != len(want) {
 		t.Fatalf("want %d standalone handlers, got %d", len(want), len(standaloneHandlerTables))
@@ -353,21 +471,13 @@ func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
 			t.Errorf("handler %q: want table %q, got %q", handler, table, got)
 		}
 	}
-	// The 5 child-row handlers must NOT be in this map — they need a
-	// parent ID the submission doesn't carry (see design doc).
-	blocked := []string{
-		"farm_activity_fertilizer", "farm_activity_chemical",
-		"harvest_grade_detail", "fermentation_batch", "drying_batch",
-	}
-	for _, handler := range blocked {
-		if _, ok := standaloneHandlerTables[handler]; ok {
-			t.Errorf("handler %q should not be dissectable yet — needs a parent ID", handler)
-		}
-	}
 }
 
 func TestDissectAnswer_UnsupportedHandlerReturnsError(t *testing.T) {
-	err := dissectAnswer(nil, "fermentation_batch", map[string]interface{}{"batch_id": "b1"})
+	// A handler name that genuinely isn't in the map (not one of the 10
+	// real ones above) — dissectAnswer must reject it before ever touching
+	// the DB, so this must not need a real *gorm.DB to pass.
+	err := dissectAnswer(nil, "not_a_real_handler", map[string]interface{}{"batch_id": "b1"})
 	if err == nil {
 		t.Fatal("want error for unsupported handler, got nil")
 	}
