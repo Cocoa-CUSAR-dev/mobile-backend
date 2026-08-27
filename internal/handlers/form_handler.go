@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"go-server-mobile/internal/validation"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -305,6 +307,22 @@ func (h *FormHandler) SubmitTaskForUser(c *gin.Context) {
 	h.submitAnswerForUser(c, userID, req.TaskID, req.Answer)
 }
 
+// validateSubmission is the actual gate #54 wants: fetch formID's schema
+// and run answer past it before letting anything write. Can't fetch a
+// schema? That's a reject too, same as a bad field — we're not writing
+// blind just because Kotlin happened to be down.
+func validateSubmission(
+	fetchSchema func(uuid.UUID) (validation.FormSchema, error),
+	formID uuid.UUID,
+	answer map[string]interface{},
+) ([]validation.FieldError, error) {
+	schema, err := fetchSchema(formID)
+	if err != nil {
+		return nil, err
+	}
+	return validation.ValidateAnswer(schema, answer), nil
+}
+
 // submitAnswerForUser is the shared dissection path both SubmitTask and
 // SubmitTaskForUser use once they've each independently resolved a trusted
 // userID (from a farmer's JWT, or — for the service path — from a verified
@@ -318,8 +336,9 @@ func (h *FormHandler) submitAnswerForUser(
 
 	var taskForm struct {
 		Handler string
+		FormID  uuid.UUID `gorm:"column:form_id"`
 	}
-	if err := h.DB.Table("form.task_form").Select("handler").Where("task_id = ?", taskID).First(&taskForm).Error; err != nil {
+	if err := h.DB.Table("form.task_form").Select("handler, form_id").Where("task_id = ?", taskID).First(&taskForm).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบแบบฟอร์มสำหรับงานที่ระบุ"})
 		return
 	}
@@ -329,7 +348,23 @@ func (h *FormHandler) submitAnswerForUser(
 		return
 	}
 
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	// Gate: nothing below this point runs until the answer passes. See
+	// validateSubmission above.
+	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, answer)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
+		return
+	}
+	if len(fieldErrs) > 0 {
+		details := make([]string, len(fieldErrs))
+		for i, fe := range fieldErrs {
+			details[i] = fe.Error()
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ข้อมูลไม่ผ่านการตรวจสอบ", "details": details})
+		return
+	}
+
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		response := map[string]interface{}{
 			"response_id":  uuid.New(),
 			"task_log_id":  taskID, // เก็บไว้อ้างอิงในระบบ DB
