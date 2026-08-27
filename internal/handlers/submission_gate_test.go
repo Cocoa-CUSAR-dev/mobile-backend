@@ -9,12 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// This is the gate #54 asked for: validateSubmission has to run clean
-// before submitAnswerForUser is allowed to open a transaction. These tests
-// don't touch a DB at all — fetchSchema is faked, so a passing test here
-// means the gate logic itself is correct, independent of whatever
-// h.DB.Transaction does afterward (that part still needs a real DB, same
-// as the rest of this file's DB-touching branches).
+// validateSubmission has to come back clean before submitAnswerForUser
+// opens a transaction — that's the whole gate. fetchSchema is faked below
+// so none of this touches a DB or Kotlin; whether h.DB.Transaction itself
+// behaves is a separate, DB-dependent question these tests don't cover.
 
 func TestValidateSubmission_PassesCleanAnswerThrough(t *testing.T) {
 	formID := uuid.New()
@@ -56,9 +54,9 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 		t.Fatal("want a field error for a non-numeric quantity_kg, got none")
 	}
 
-	// submitAnswerForUser only reaches h.DB.Transaction when len(errs) == 0 —
-	// mirror that branch here so a regression that drops the early return
-	// shows up as this test calling fakeDBWrite.
+	// submitAnswerForUser only opens the transaction when len(errs) == 0;
+	// copying that check here means a dropped early-return would show up
+	// as fakeDBWrite firing.
 	if len(errs) == 0 {
 		fakeDBWrite()
 	}
@@ -68,9 +66,8 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 }
 
 func TestValidateSubmission_SchemaFetchFailureFailsClosed(t *testing.T) {
-	// Kotlin down, bad service key, whatever — if the schema can't be
-	// fetched, there's nothing to validate against, so this must come back
-	// as an error rather than silently letting the answer through.
+	// no schema to check against means no way to know the answer's safe —
+	// this has to fail, not pass by default.
 	fetchSchema := func(uuid.UUID) (validation.FormSchema, error) {
 		return validation.FormSchema{}, errors.New("upstream unavailable")
 	}

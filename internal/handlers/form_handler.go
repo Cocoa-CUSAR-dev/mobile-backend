@@ -307,12 +307,10 @@ func (h *FormHandler) SubmitTaskForUser(c *gin.Context) {
 	h.submitAnswerForUser(c, userID, req.TaskID, req.Answer)
 }
 
-// validateSubmission is the actual gate from #54: fetch formID's schema via
-// fetchSchema and check answer against it before anything is allowed to
-// write. A non-nil error means the schema itself couldn't be fetched (Kotlin
-// down, bad service key, whatever) — that's treated the same as a failed
-// validation, not waved through, since there's no way to confirm the answer
-// is safe without a schema to check it against.
+// validateSubmission is the actual gate #54 wants: fetch formID's schema
+// and run answer past it before letting anything write. Can't fetch a
+// schema? That's a reject too, same as a bad field — we're not writing
+// blind just because Kotlin happened to be down.
 func validateSubmission(
 	fetchSchema func(uuid.UUID) (validation.FormSchema, error),
 	formID uuid.UUID,
