@@ -81,6 +81,11 @@ func (h *ProcessingHandler) RegisterProcessor(c *gin.Context) {
 	tx.Exec("INSERT INTO auth.user_role (user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING", userID, roleID)
 
 	tx.Commit()
+
+	// Re-sign the session cookie so it carries the "processor" role that
+	// was just granted — see reissueTokenCookie's doc comment.
+	_ = reissueTokenCookie(c, h.DB, userID)
+
 	c.JSON(http.StatusOK, gin.H{"message": "ลงทะเบียน Processor สำเร็จ"})
 }
 

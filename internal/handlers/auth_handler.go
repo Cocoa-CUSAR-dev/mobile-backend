@@ -31,6 +31,10 @@ type AuthHandler struct {
 // LINE endpoint would hang this request indefinitely.
 var lineAPIClient = &http.Client{Timeout: 10 * time.Second}
 
+// lineVerifyURL is a var, not a literal in verifyLineIDToken, so tests can
+// point it at a fake server instead of hitting api.line.me for real.
+var lineVerifyURL = "https://api.line.me/oauth2/v2.1/verify"
+
 func GenerateToken(userID uuid.UUID, username string, roles []string) (string, int, error) {
 	secretKey := []byte(os.Getenv("JWT_KEY"))
 	// JWT_ACCESS_TOKEN_EXPIRATION is in SECONDS (matches the env var name
@@ -59,6 +63,74 @@ func GenerateToken(userID uuid.UUID, username string, roles []string) (string, i
 	tokenString, err := token.SignedString(secretKey)
 
 	return tokenString, expirationSec, err
+}
+
+/*resolveRoles is the single source of truth for a user's roles — the
+auth.user_role / auth.role join. Login and GetMe used to each compute
+roles a different way (this join vs. checking for rows in the
+agriculture.farmer / processing.processor / processing.hub_collector
+profile tables), which could disagree: GetMe's old approach could never
+report a role like "admin" that only ever exists in auth.user_role, not
+in any profile table. Both now call this instead.
+
+Package-level (not a method) so any handler with a *gorm.DB can call it —
+reissueTokenCookie below needs it from AgricultureHandler/CollectionHandler/
+ProcessingHandler, none of which are AuthHandler.*/
+func resolveRoles(db *gorm.DB, userID uuid.UUID) []string {
+	type roleRow struct {
+		RoleName string
+	}
+	var rows []roleRow
+	db.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", userID).
+		Scan(&rows)
+
+	roles := make([]string, 0, len(rows))
+	for _, row := range rows {
+		roles = append(roles, row.RoleName)
+	}
+	return roles
+}
+
+func (h *AuthHandler) resolveRoles(userID uuid.UUID) []string {
+	return resolveRoles(h.DB, userID)
+}
+
+// reissueTokenCookie re-signs a fresh JWT for userID — picking up whatever
+// roles they have *right now* — and overwrites the session cookie with it.
+// JWTs are stateless: once issued, nothing about a token's claims can
+// change until it's replaced. Without this, a role granted by (e.g.)
+// RegisterFarmerProfile is invisible to RequireRole until the user logs
+// out and back in, because the cookie they're still holding was signed
+// before the role existed. Call this right after any DB change that grants
+// a role, using the same request's cookie-setting mechanism Login uses.
+//
+// This does not address the reverse case (a role being revoked while an
+// old token is still valid) — there's currently no endpoint anywhere in
+// this codebase that revokes a role, so that side of the problem is
+// latent, not active. When one is added, it should call this too; until
+// then, the token's normal expiry (JWT_ACCESS_TOKEN_EXPIRATION) is the
+// only bound on how long a revoked role stays usable.
+func reissueTokenCookie(c *gin.Context, db *gorm.DB, userID uuid.UUID) error {
+	var user models.UserAccount
+	if err := db.Table("auth.user_account").Where("user_id = ?", userID).First(&user).Error; err != nil {
+		return err
+	}
+
+	roles := resolveRoles(db, userID)
+	token, maxAge, err := GenerateToken(user.UserID, user.Username, roles)
+	if err != nil {
+		return err
+	}
+
+	jwtName := os.Getenv("JWT_NAME")
+	if jwtName == "" {
+		jwtName = "cocoa_mobile_jwt"
+	}
+	c.SetCookie(jwtName, token, maxAge, "/", "", false, true)
+	return nil
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -92,27 +164,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// --- ส่วนการตรวจสอบ Roles และ Profile ---
-	var roles []string
-	var hasProfile bool
-
-	// 1. ตรวจสอบจาก Table หลัก (auth) เพื่อดูว่าเป็น Admin หรือ Researcher หรือไม่
-	// สมมติว่ามี table auth.user_role ที่เก็บ role_id และ user_id
-	type RoleResult struct {
-		RoleName string
-	}
-	var dbRoles []RoleResult
-	h.DB.Table("auth.user_role").
-		Select("r.role_name").
-		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
-		Where("auth.user_role.user_id = ?", user.UserID).
-		Scan(&dbRoles)
-
-	for _, r := range dbRoles {
-		roles = append(roles, r.RoleName)
-		hasProfile = true
-	}
-	// กำจัดค่าซ้ำใน slice (ถ้าจำเป็น) และจัดการ logic hasProfile
-	// ---------------------------------------
+	roles := h.resolveRoles(user.UserID)
+	hasProfile := len(roles) > 0
 
 	// 4. สร้าง JWT Token (ส่ง userID และ roles เข้าไปด้วยเพื่อให้ Middleware ตรวจสอบ Permission ได้)
 	token, maxAge, err := GenerateToken(user.UserID, user.Username, roles)
@@ -146,7 +199,7 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 		"id_token":  {idToken},
 		"client_id": {channelID},
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://api.line.me/oauth2/v2.1/verify", strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, lineVerifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", "", fmt.Errorf("สร้างคำขอตรวจสอบ LINE token ไม่สำเร็จ: %w", err)
 	}
@@ -172,6 +225,12 @@ func verifyLineIDToken(idToken string) (lineUserID string, name string, err erro
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", "", fmt.Errorf("อ่าน payload จาก LINE ไม่สำเร็จ")
+	}
+	// LINE's contract is that a 200 always carries a non-empty sub -- but if
+	// that's ever not true, an empty string would otherwise sail through as
+	// a "verified" line_user_id and end up written to auth.line_identity.
+	if payload.Sub == "" {
+		return "", "", fmt.Errorf("LINE ไม่ได้ส่ง sub (line_user_id) กลับมา")
 	}
 	return payload.Sub, payload.Name, nil
 }
@@ -235,11 +294,30 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
+	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
+	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
+	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
+	type RoleResult struct {
+		RoleName string
+	}
+	var dbRoles []RoleResult
+	h.DB.Table("auth.user_role").
+		Select("r.role_name").
+		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
+		Where("auth.user_role.user_id = ?", user.UserID).
+		Scan(&dbRoles)
+	hasProfile := len(dbRoles) > 0
+
 	var linkReq models.LineLinkRequest
 	linkReq.UserID = user.UserID
 	linkReq.LineUserID = lineUserID
 	linkReq.DisplayName = lineName
 	if err := h.DB.Create(&linkReq).Error; err != nil {
+		// log error จริงไว้ (ก่อนหน้านี้ไม่มีเลย ทำให้ debug ไม่ได้ว่าทำไม
+		// insert พังจริงๆ — ข้อความที่ตอบกลับ user เป็นแค่สรุปแบบเป็นมิตร)
+		fmt.Printf("❌ LinkLineAccount: DB.Create(auth.line_identity) error: %v\n", err)
+
 		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
 		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
 		// database error ทั่วไป ต้องแยกข้อความให้ user เข้าใจสถานการณ์จริง
@@ -252,9 +330,10 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.UserID.String(),
+		"user_id":      user.UserID.String(),
 		"line_user_id": lineUserID,
-		"message": "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"has_profile":  hasProfile,
+		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
 	})
 }
 
@@ -334,31 +413,8 @@ func (h *AuthHandler) GetMe(c *gin.Context) {
 		return
 	}
 
-	// แยกดึง Roles (เนื่องจาก 1 คนอาจมีหลาย Role)
-	var roles []string
-
-	// ตรวจสอบ Role จากการมีตัวตนในตาราง Profile เพิ่มเติม
-	var counts struct {
-		IsFarmer    bool
-		IsProcessor bool
-		IsCollector bool
-	}
-	h.DB.Raw(`
-        SELECT 
-            EXISTS(SELECT 1 FROM agriculture.farmer WHERE user_id = ?) as is_farmer,
-            EXISTS(SELECT 1 FROM processing.processor WHERE user_id = ?) as is_processor,
-            EXISTS(SELECT 1 FROM processing.hub_collector WHERE user_id = ?) as is_collector
-    `, userID, userID, userID).Scan(&counts)
-
-	if counts.IsFarmer {
-		roles = append(roles, "farmer")
-	}
-	if counts.IsProcessor {
-		roles = append(roles, "processor")
-	}
-	if counts.IsCollector {
-		roles = append(roles, "hub_collector")
-	}
+	// แยกดึง Roles ผ่านฟังก์ชันเดียวกับ Login เพื่อไม่ให้ role ไม่ตรงกันระหว่าง endpoint
+	roles := h.resolveRoles(userID)
 
 	response := gin.H{
 		"user_id": userID,
