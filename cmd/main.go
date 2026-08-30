@@ -125,6 +125,7 @@ func main() {
 	service.Use(middleware.ServiceAuthMiddleware())
 	{
 		service.POST("/tasks", formHandler.SubmitTaskForUser)
+		service.GET("/tasks/last-answer", formHandler.GetLastAnswer)
 	}
 
 	// 5. Start Server

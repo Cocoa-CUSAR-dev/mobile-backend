@@ -307,6 +307,82 @@ func (h *FormHandler) SubmitTaskForUser(c *gin.Context) {
 	h.submitAnswerForUser(c, userID, req.TaskID, req.Answer)
 }
 
+// LastAnswerResponse is what GET /service/tasks/last-answer returns -- the
+// raw answer JSON from the most recent COMPLETED submission for (user,
+// handler), nothing filtered out yet. #105 (US2-5) is where filtering for
+// what's actually safe to offer as autofill happens (stale parent IDs,
+// OPTION values that no longer resolve in the current form, etc.) -- this
+// endpoint is deliberately just the lookup, so both the chatbot and any
+// future static-form screen build on the same primitive instead of
+// re-deriving it twice.
+type LastAnswerResponse struct {
+	Handler     string                 `json:"handler"`
+	SubmittedAt time.Time              `json:"submitted_at"`
+	Answer      map[string]interface{} `json:"answer"`
+}
+
+// 2c. GET /service/tasks/last-answer?user_id=...&handler=... -- #100
+// (US2-4): "offer reusing my last submission's answers." 404 if this
+// (user, handler) pair has no COMPLETED submission yet.
+//
+// Same trust boundary SubmitTaskForUser already accepts for user_id: the
+// caller (currently only the chatbot, gated by ServiceAuthMiddleware)
+// names it explicitly, trusted at face value. Unlike SubmitTaskForUser's
+// write path there's no chat.conversation row to cross-check against yet
+// here -- this is deliberately called BEFORE a farmer has picked/started
+// anything, so there's no task-specific row to correlate against. The
+// result never leaves the server process: it's only used to build a
+// prompt for the same user_id the caller already resolved via its own
+// identity check upstream (LINE identity, for the chatbot).
+func (h *FormHandler) GetLastAnswer(c *gin.Context) {
+	userIDParam := c.Query("user_id")
+	handler := c.Query("handler")
+	if userIDParam == "" || handler == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุ user_id และ handler"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id ไม่ถูกต้อง"})
+		return
+	}
+
+	// Raw SQL, not the GORM query builder -- same shape GetTasks already
+	// uses for the identical form.task_form join, proven reliable here.
+	var result struct {
+		SubmittedAt time.Time
+		Answer      []byte
+	}
+	query := `
+		SELECT r.submitted_at, r.answer
+		FROM form.response r
+		JOIN form.task_form tf ON tf.task_id = r.task_log_id
+		WHERE r.user_id = ? AND tf.handler = ? AND r.status = 'COMPLETED'
+		ORDER BY r.submitted_at DESC
+		LIMIT 1
+	`
+	// GORM's Scan (unlike First) never sets .Error just because zero rows
+	// matched -- it silently leaves the struct at its zero value instead.
+	// Answer == nil is the actual "nothing found" signal here, not err.
+	if err := h.DB.Raw(query, userID, handler).Scan(&result).Error; err != nil || result.Answer == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบประวัติการส่งงานประเภทนี้มาก่อน"})
+		return
+	}
+
+	var answer map[string]interface{}
+	if err := json.Unmarshal(result.Answer, &answer); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเดิมเสียหาย"})
+		return
+	}
+
+	c.JSON(http.StatusOK, LastAnswerResponse{
+		Handler:     handler,
+		SubmittedAt: result.SubmittedAt,
+		Answer:      answer,
+	})
+}
+
 // validateSubmission is the actual gate #54 wants: fetch formID's schema
 // and run answer past it before letting anything write. Can't fetch a
 // schema? That's a reject too, same as a bad field — we're not writing
