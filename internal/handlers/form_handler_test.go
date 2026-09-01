@@ -447,14 +447,21 @@ func TestFilterKnownColumns_EmptyWhenNoMatch(t *testing.T) {
 
 func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
 	// Guards against typos/drift from the verified table in
-	// task-dissection-design.md — these 5 handlers have their own
-	// generated PK and are safe to dissect generically.
+	// task-dissection-design.md / chatbot-child-handler-design.md — all 10
+	// of these have their own generated PK (the original 5) or now get
+	// their parent ID resolved upstream by the chatbot's picker (the other
+	// 5), so both are safe to dissect generically.
 	want := map[string]string{
 		"farm_activity":            "agriculture.farm_activity",
 		"processing_record":        "processing.processing_record",
 		"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
 		"harvest":                  "collection.harvest",
 		"batch":                    "processing.batch",
+		"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
+		"farm_activity_chemical":   "agriculture.farm_activity_chemical",
+		"harvest_grade_detail":     "collection.harvest_grade_detail",
+		"fermentation_batch":       "processing.fermentation_batch",
+		"drying_batch":             "processing.drying_batch",
 	}
 	if len(standaloneHandlerTables) != len(want) {
 		t.Fatalf("want %d standalone handlers, got %d", len(want), len(standaloneHandlerTables))
@@ -464,21 +471,13 @@ func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
 			t.Errorf("handler %q: want table %q, got %q", handler, table, got)
 		}
 	}
-	// The 5 child-row handlers must NOT be in this map — they need a
-	// parent ID the submission doesn't carry (see design doc).
-	blocked := []string{
-		"farm_activity_fertilizer", "farm_activity_chemical",
-		"harvest_grade_detail", "fermentation_batch", "drying_batch",
-	}
-	for _, handler := range blocked {
-		if _, ok := standaloneHandlerTables[handler]; ok {
-			t.Errorf("handler %q should not be dissectable yet — needs a parent ID", handler)
-		}
-	}
 }
 
 func TestDissectAnswer_UnsupportedHandlerReturnsError(t *testing.T) {
-	err := dissectAnswer(nil, "fermentation_batch", map[string]interface{}{"batch_id": "b1"})
+	// A handler name that genuinely isn't in the map (not one of the 10
+	// real ones above) — dissectAnswer must reject it before ever touching
+	// the DB, so this must not need a real *gorm.DB to pass.
+	err := dissectAnswer(nil, "not_a_real_handler", map[string]interface{}{"batch_id": "b1"})
 	if err == nil {
 		t.Fatal("want error for unsupported handler, got nil")
 	}
