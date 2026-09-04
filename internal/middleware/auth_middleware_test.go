@@ -534,6 +534,104 @@ func TestJwtAuthMiddleware_ExtraClaimsAreIgnored(t *testing.T) {
 	}
 }
 
+// --- Authorization: Bearer support (web clients -- cookies don't survive a
+// cross-origin round trip from a GitHub Pages / LIFF-hosted frontend, see
+// resolveTokenString's doc comment) ---------------------------------------
+
+func TestJwtAuthMiddleware_BearerHeaderNoCookieSucceeds(t *testing.T) {
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{
+		"user_id": uid.String(),
+		"roles":   []interface{}{"farmer"},
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	// deliberately no cookie at all
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for Bearer-only request, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if !res.ran {
+		t.Error("downstream handler should have run for a valid Bearer token")
+	}
+	if res.userID != uid.String() {
+		t.Errorf("userID: want %s, got %s", uid.String(), res.userID)
+	}
+	if len(res.roles) != 1 || res.roles[0] != "farmer" {
+		t.Errorf("roles: want [farmer], got %v", res.roles)
+	}
+}
+
+func TestJwtAuthMiddleware_BearerHeaderTakesPrecedenceOverCookie(t *testing.T) {
+	// Two different valid tokens: Bearer header should win, proving the
+	// middleware doesn't silently fall back to the cookie when a (valid)
+	// Authorization header is also present.
+	bearerUID := uuid.New()
+	cookieUID := uuid.New()
+	bearerTok := mintToken(t, jwt.MapClaims{"user_id": bearerUID.String(), "exp": time.Now().Add(time.Hour).Unix()})
+	cookieTok := mintToken(t, jwt.MapClaims{"user_id": cookieUID.String(), "exp": time.Now().Add(time.Hour).Unix()})
+
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+bearerTok)
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: cookieTok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if res.userID != bearerUID.String() {
+		t.Errorf("userID: want the Bearer token's %s, got %s", bearerUID.String(), res.userID)
+	}
+}
+
+func TestJwtAuthMiddleware_MalformedAuthorizationHeaderFallsBackToCookie(t *testing.T) {
+	// An Authorization header that isn't "Bearer <token>" (missing prefix,
+	// or some other scheme) must not error out -- it should be ignored and
+	// the cookie fallback tried instead.
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{"user_id": uid.String(), "exp": time.Now().Add(time.Hour).Unix()})
+
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz") // wrong scheme entirely
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 (cookie fallback), got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if res.userID != uid.String() {
+		t.Errorf("userID: want %s, got %s", uid.String(), res.userID)
+	}
+}
+
+func TestJwtAuthMiddleware_NoBearerNoCookieReturns401WithFixedMessage(t *testing.T) {
+	// Pins the fixed error message (previously concatenated with no
+	// separator: "Session expired, please login again" + jwtName).
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	wantSubstr := "Session expired, please login again (" + testCookieName + ")"
+	if !strings.Contains(w.Body.String(), wantSubstr) {
+		t.Errorf("want body to contain %q, got %s", wantSubstr, w.Body.String())
+	}
+	if res.ran {
+		t.Error("downstream handler should not have run after abort")
+	}
+}
+
 // --- Cookie name resolution ----------------------------------------------
 
 func TestJwtAuthMiddleware_CookieNameFromEnv(t *testing.T) {

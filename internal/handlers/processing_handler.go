@@ -82,11 +82,12 @@ func (h *ProcessingHandler) RegisterProcessor(c *gin.Context) {
 
 	tx.Commit()
 
-	// Re-sign the session cookie so it carries the "processor" role that
-	// was just granted — see reissueTokenCookie's doc comment.
-	_ = reissueTokenCookie(c, h.DB, userID)
+	// Re-sign the session so it carries the "processor" role that was just
+	// granted — see reissueTokenCookie's doc comment. Also returned in the
+	// body so a web client can update its stored Bearer token.
+	newToken, _ := reissueTokenCookie(c, h.DB, userID)
 
-	c.JSON(http.StatusOK, gin.H{"message": "ลงทะเบียน Processor สำเร็จ"})
+	c.JSON(http.StatusOK, gin.H{"message": "ลงทะเบียน Processor สำเร็จ", "token": newToken})
 }
 
 func (h *ProcessingHandler) RegisterStation(c *gin.Context) {

@@ -62,20 +62,24 @@ func refreshCookieName() string {
 // latent, not active. When one is added, it should call this too; until
 // then, the token's normal expiry (JWT_ACCESS_TOKEN_EXPIRATION) is the
 // only bound on how long a revoked role stays usable.
-func reissueTokenCookie(c *gin.Context, db *gorm.DB, userID uuid.UUID) error {
+func reissueTokenCookie(c *gin.Context, db *gorm.DB, userID uuid.UUID) (string, error) {
 	var user models.UserAccount
 	if err := db.Table("auth.user_account").Where("user_id = ?", userID).First(&user).Error; err != nil {
-		return err
+		return "", err
 	}
 
 	roles := services.ResolveRoles(db, userID)
 	token, maxAge, err := services.GenerateToken(user.UserID, user.Username, roles)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	c.SetCookie(jwtCookieName(), token, maxAge, "/", "", false, true)
-	return nil
+	// Also return the token itself -- callers include it in their JSON body
+	// (web clients can't rely on the cookie surviving a cross-origin round
+	// trip, see resolveTokenString in the middleware) so they need something
+	// to store and re-send as Authorization: Bearer.
+	return token, nil
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -136,6 +140,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"username":    user.Username,
 		"roles":       roles, // ส่งกลับเป็น ["admin", "farmer", ...]
 		"has_profile": hasProfile,
+		// Cross-origin web clients (e.g. the GitHub Pages LIFF build) can't
+		// read Set-Cookie at all, so the cookie alone isn't enough to keep
+		// them logged in -- also hand back the raw token so they can store
+		// it themselves and re-send it as Authorization: Bearer <token>.
+		"token": token,
 	})
 }
 
@@ -174,6 +183,9 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "ต่ออายุ token สำเร็จ",
+		// same reasoning as Login -- web clients need the raw token, not
+		// just the cookie, see the comment there.
+		"token": accessToken,
 	})
 }
 
@@ -236,20 +248,13 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
-	// ตรวจ has_profile เหมือน Login() เป๊ะๆ (join auth.user_role + auth.role)
+	// ตรวจ has_profile เหมือน Login() เป๊ะๆ — ใช้ services.ResolveRoles ตัวเดียวกับที่
+	// Login/reissueTokenCookie ใช้ (แหล่งความจริงเดียว กัน role ไม่ตรงกันระหว่าง endpoint)
 	// เพื่อให้ frontend ตัดสินใจได้ว่าเชื่อมบัญชีเสร็จแล้วต้องพาไปกรอกโปรไฟล์
 	// (Role Register Page) ก่อน หรือเสร็จสมบูรณ์แล้วไปหน้า success ได้เลย —
 	// ใช้ตรรกะเดียวกับ next_page ของ Login ปกติ ไม่ใช่ตรรกะแยกของ LIFF เอง
-	type RoleResult struct {
-		RoleName string
-	}
-	var dbRoles []RoleResult
-	h.DB.Table("auth.user_role").
-		Select("r.role_name").
-		Joins("JOIN auth.role r ON r.role_id = auth.user_role.role_id").
-		Where("auth.user_role.user_id = ?", user.UserID).
-		Scan(&dbRoles)
-	hasProfile := len(dbRoles) > 0
+	roles := services.ResolveRoles(h.DB, user.UserID)
+	hasProfile := len(roles) > 0
 
 	var linkReq models.LineLinkRequest
 	linkReq.UserID = user.UserID
@@ -271,11 +276,23 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 		return
 	}
 
+	// LinkLineAccount ใช้แทน Login สำหรับ flow "ผูกบัญชี LINE" (LIFF) — ต้องออก
+	// session token ให้เหมือนกัน ไม่งั้นเกษตรกรที่เข้ามาทางนี้จะไม่มีทาง auth เลย
+	// (เดิมฟังก์ชันนี้ไม่ตั้งคุกกี้และไม่คืน token ใด ๆ -- ช่องโหว่จริง). ตั้งคุกกี้ไว้ด้วย
+	// เพื่อความสมมาตรกับ Login แต่ตัวที่ client เว็บพึ่งได้จริงคือ "token" ในนี้
+	token, maxAge, err := services.GenerateToken(user.UserID, user.Username, roles)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถสร้าง token ได้"})
+		return
+	}
+	c.SetCookie(jwtCookieName(), token, maxAge, "/", "", false, true)
+
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":      user.UserID.String(),
 		"line_user_id": lineUserID,
 		"has_profile":  hasProfile,
 		"message":      "verify สำเร็จ และบันทึกการผูกบัญชี LINE เรียบร้อยแล้ว",
+		"token":        token,
 	})
 }
 
