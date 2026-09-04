@@ -126,6 +126,7 @@ func main() {
 	{
 		service.POST("/tasks", formHandler.SubmitTaskForUser)
 		service.GET("/tasks/last-answer", formHandler.GetLastAnswer)
+		service.POST("/autofill/sanitize", handlers.SanitizeAutofill)
 	}
 
 	// 5. Start Server
