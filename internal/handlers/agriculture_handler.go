@@ -336,10 +336,14 @@ func (h *AgricultureHandler) GetMyFarms(c *gin.Context) {
 
 	// 1. ใช้ Joins ตารางกลาง (FarmerFarm) เพื่อกรองข้อมูล
 	// 2. ใช้ Preload("Plots") ตรงๆ โดยไม่ต้องใช้ .Table() ข้างใน
+	// GO-6: paginated, with a stable order (farm_id) since Limit/Offset
+	// without one can return a row twice or skip one across pages.
 	err := h.DB.Debug().Model(&models.Farm{}).
 		Table("agriculture.farm").
 		Joins("JOIN agriculture.farmer_farm ON agriculture.farmer_farm.farm_id = agriculture.farm.farm_id").
 		Where("agriculture.farmer_farm.farmer_id = ?", userID).
+		Order("agriculture.farm.farm_id").
+		Scopes(Paginate(c)).
 		Preload("Plots"). // <--- เรียกชื่อ Field ใน Struct ตรงๆ
 		Find(&farms).Error
 
@@ -372,6 +376,9 @@ func (h *AgricultureHandler) GetMyPlots(c *gin.Context) {
 		Where("agriculture.farmer_farm.farmer_id = ?", userID).
 		// จัดกลุ่มข้อมูล (Optional: กรณีมีการ Join ซ้ำซ้อน)
 		Group("agriculture.plot.plot_id").
+		// GO-6: paginated, ordered by plot_id for stable paging.
+		Order("agriculture.plot.plot_id").
+		Scopes(Paginate(c)).
 		Find(&plots).Error
 
 	if err != nil {

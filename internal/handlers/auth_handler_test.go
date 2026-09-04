@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"go-server-mobile/internal/services"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,7 +34,7 @@ func TestGenerateToken_SignedAndDecodable(t *testing.T) {
 	uname := "0812345678"
 	roles := []string{"farmer", "hub_collector"}
 
-	tokenStr, maxAge, err := GenerateToken(uid, uname, roles)
+	tokenStr, maxAge, err := services.GenerateToken(uid, uname, roles)
 	if err != nil {
 		t.Fatalf("GenerateToken returned error: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestGenerateToken_NilRolesEncodesAsEmptyArray(t *testing.T) {
 	// A user with no roles yet (e.g. registered but no profile created)
 	// must still get a decodable "roles" claim — nil would encode as JSON
 	// `null`, which callers would have to special-case.
-	tokenStr, _, err := GenerateToken(uuid.New(), "0899999999", nil)
+	tokenStr, _, err := services.GenerateToken(uuid.New(), "0899999999", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +116,11 @@ func TestGenerateToken_NilRolesEncodesAsEmptyArray(t *testing.T) {
 }
 
 func TestGenerateToken_DifferentUsersProduceDifferentTokens(t *testing.T) {
-	a, _, err := GenerateToken(uuid.New(), "user-a", nil)
+	a, _, err := services.GenerateToken(uuid.New(), "user-a", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, err := GenerateToken(uuid.New(), "user-b", nil)
+	b, _, err := services.GenerateToken(uuid.New(), "user-b", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,9 +386,9 @@ func TestBcryptRoundTripWithHandlerCost(t *testing.T) {
 
 // --- verifyLineIDToken ------------------------------------------------------
 //
-// verifyLineIDToken always dials https://api.line.me itself (the URL isn't
-// injectable), so tests redirect the package-level lineAPIClient at a local
-// httptest.Server by rewriting each outgoing request's scheme+host.
+// services.VerifyLineIDToken always dials https://api.line.me itself (the
+// URL isn't injectable), so tests redirect services.LineAPIClient at a
+// local httptest.Server by rewriting each outgoing request's scheme+host.
 
 type rewriteTransport struct{ target *url.URL }
 
@@ -399,13 +400,13 @@ func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func swapLineAPIClient(t *testing.T, ts *httptest.Server) {
 	t.Helper()
-	original := lineAPIClient
+	original := services.LineAPIClient
 	target, err := url.Parse(ts.URL)
 	if err != nil {
 		t.Fatalf("parse test server URL: %v", err)
 	}
-	lineAPIClient = &http.Client{Transport: rewriteTransport{target: target}}
-	t.Cleanup(func() { lineAPIClient = original })
+	services.LineAPIClient = &http.Client{Transport: rewriteTransport{target: target}}
+	t.Cleanup(func() { services.LineAPIClient = original })
 }
 
 func setLineChannelID(t *testing.T, id string) {
@@ -446,7 +447,7 @@ func TestVerifyLineIDToken_Success(t *testing.T) {
 	defer ts.Close()
 	swapLineAPIClient(t, ts)
 
-	lineUserID, name, err := verifyLineIDToken("good-token")
+	lineUserID, name, err := services.VerifyLineIDToken("good-token")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -467,7 +468,7 @@ func TestVerifyLineIDToken_NonOKStatus(t *testing.T) {
 	defer ts.Close()
 	swapLineAPIClient(t, ts)
 
-	if _, _, err := verifyLineIDToken("bad-token"); err == nil {
+	if _, _, err := services.VerifyLineIDToken("bad-token"); err == nil {
 		t.Fatal("expected error for non-200 response, got nil")
 	}
 }
@@ -481,7 +482,7 @@ func TestVerifyLineIDToken_MalformedJSON(t *testing.T) {
 	defer ts.Close()
 	swapLineAPIClient(t, ts)
 
-	if _, _, err := verifyLineIDToken("any-token"); err == nil {
+	if _, _, err := services.VerifyLineIDToken("any-token"); err == nil {
 		t.Fatal("expected error for malformed JSON body, got nil")
 	}
 }
@@ -498,7 +499,7 @@ func TestVerifyLineIDToken_EmptySubIsRejected(t *testing.T) {
 	defer ts.Close()
 	swapLineAPIClient(t, ts)
 
-	if _, _, err := verifyLineIDToken("any-token"); err == nil {
+	if _, _, err := services.VerifyLineIDToken("any-token"); err == nil {
 		t.Fatal("expected error when LINE's response has an empty sub, got nil")
 	}
 }
@@ -506,7 +507,7 @@ func TestVerifyLineIDToken_EmptySubIsRejected(t *testing.T) {
 func TestVerifyLineIDToken_MissingChannelID(t *testing.T) {
 	setLineChannelID(t, "")
 
-	if _, _, err := verifyLineIDToken("any-token"); err == nil {
+	if _, _, err := services.VerifyLineIDToken("any-token"); err == nil {
 		t.Fatal("expected error when LINE_CHANNEL_ID is unset, got nil")
 	}
 }
@@ -519,7 +520,7 @@ func TestVerifyLineIDToken_TransportError(t *testing.T) {
 	swapLineAPIClient(t, ts)
 	ts.Close() // closed before the request is made -> connection refused
 
-	if _, _, err := verifyLineIDToken("any-token"); err == nil {
+	if _, _, err := services.VerifyLineIDToken("any-token"); err == nil {
 		t.Fatal("expected error when LINE API is unreachable, got nil")
 	}
 }

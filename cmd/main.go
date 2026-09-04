@@ -69,8 +69,26 @@ func main() {
 	{
 		public.POST("/login", authHandler.Login)
 		public.POST("/register", authHandler.Register)
+		// GO-3: exchanges a still-valid refresh token for a new access
+		// token, public since the whole point is to work once the access
+		// token itself has already expired.
+		public.POST("/refresh", authHandler.RefreshToken)
 		public.GET("/test", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "hello world"})
+		})
+		// GO-5: a real health check -- pings the DB instead of returning a
+		// static 200 regardless of whether the app can actually serve traffic.
+		public.GET("/health", func(c *gin.Context) {
+			sqlDB, err := db.DB()
+			if err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": err.Error()})
+				return
+			}
+			if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		})
 
 		public.POST("/liff/verify", authHandler.VerifyLiffToken)
@@ -128,7 +146,14 @@ func main() {
 	}
 
 	// 5. Start Server
-	if err := r.Run(":8080"); err != nil {
+	// GO-5: was hardcoded ":8080" -- Render already injects PORT (see
+	// render.yaml), this just stopped listening for it. Same "env var with
+	// inline default" idiom as DB_SSLMODE in internal/database/postgres.go.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("server failed to start: %v", err)
 	}
 }

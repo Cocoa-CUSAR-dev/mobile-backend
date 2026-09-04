@@ -137,11 +137,17 @@ func (h *ProcessingHandler) GetMyProcessingStation(c *gin.Context) {
 	userID := val.(uuid.UUID)
 
 	// 1. ดึงข้อมูล Stations ที่ User คนนี้ดูแลอยู่
+	// GO-6: paginated + ordered for stable paging. Preload("Batches") runs
+	// its own separate query per station, unaffected by this page's Limit/
+	// Offset -- pagination here bounds the number of stations, not the
+	// batches nested under each one.
 	var stations []models.ProcessingStation
 	err := h.DB.Table("processing.processing_station").
 		Select("processing.processing_station.*").
 		Joins("JOIN processing.processor_processing_station pps ON pps.processing_station_id = processing.processing_station.processing_station_id").
 		Where("pps.processor_id = ?", userID).
+		Order("processing.processing_station.processing_station_id").
+		Scopes(Paginate(c)).
 		Preload("Batches").
 		Find(&stations).Error
 
@@ -162,11 +168,16 @@ func (h *ProcessingHandler) GetMyBatches(c *gin.Context) {
 	val, _ := c.Get("userID")
 	userID := val.(uuid.UUID)
 
+	// GO-6: paginated + ordered (qualified batch_id, since the joins above
+	// pull in other tables' columns too and an unqualified Order() would be
+	// ambiguous).
 	var batches []map[string]interface{}
 	err := h.DB.Table("processing.batch").
 		Joins("JOIN processing.processing_station ON processing.processing_station.processing_station_id = processing.batch.processing_station_id").
 		Joins("JOIN processing.processor_processing_station ON processing.processor_processing_station.processing_station_id = processing.processing_station.processing_station_id").
 		Where("processing.processor_processing_station.processor_id = ?", userID).
+		Order("processing.batch.batch_id").
+		Scopes(Paginate(c)).
 		Find(&batches).Error
 
 	if err != nil {

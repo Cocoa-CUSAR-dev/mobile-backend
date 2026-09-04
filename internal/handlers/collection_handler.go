@@ -149,11 +149,18 @@ func (h *CollectionHandler) GetMyHub(c *gin.Context) {
 	userID := val.(uuid.UUID)
 
 	// 1. ดึง HUB ทั้งหมดของ user
+	// GO-6: paginated (a collector realistically has few hubs, but no
+	// hard limit exists in the schema). The harvests fetched below span
+	// every hub on this page, not paginated separately -- splitting that
+	// by page boundary would cut a hub's harvest list at an arbitrary
+	// point, which is worse than leaving it as one bounded-by-hubs fetch.
 	var hubs []models.Hub
 	err := h.DB.Table("processing.hub").
 		Select("processing.hub.*").
 		Joins("JOIN processing.hub_collector ON processing.hub_collector.hub_id = processing.hub.hub_id").
 		Where("processing.hub_collector.user_id = ?", userID).
+		Order("processing.hub.hub_id").
+		Scopes(Paginate(c)).
 		Find(&hubs).Error
 
 	if err != nil {
@@ -237,7 +244,10 @@ func (h *CollectionHandler) GetMyHarvests(c *gin.Context) {
 		// Left Join ข้อมูลการจับคู่ Batch
 		Joins("LEFT JOIN collection.harvest_collection hc ON hc.harvest_id = collection.harvest.harvest_id").
 		Where("hc_auth.user_id = ?", userID).
-		Order("collection.harvest.harvest_date DESC").
+		// GO-6: harvest_id tiebreaker added so rows sharing a harvest_date
+		// don't reshuffle across pages; paginated via the shared scope.
+		Order("collection.harvest.harvest_date DESC, collection.harvest.harvest_id").
+		Scopes(Paginate(c)).
 		Find(&results).Error
 
 	if err != nil {

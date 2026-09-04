@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"go-server-mobile/internal/models"
+	"go-server-mobile/internal/services"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
@@ -71,6 +72,19 @@ CREATE TABLE IF NOT EXISTS auth.line_identity (
 	CONSTRAINT uq_line_identity_user UNIQUE (user_id),
 	CONSTRAINT uq_line_identity_line_user_id UNIQUE (line_user_id)
 );
+
+-- GO-3: mirrors database repo's V19__mobile_refresh_token.sql -- see that
+-- migration's comment for why only a hash is stored.
+CREATE TABLE IF NOT EXISTS auth.refresh_token (
+	refresh_token_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	user_id uuid NOT NULL REFERENCES auth.user_account(user_id),
+	token_hash character varying NOT NULL,
+	expires_at timestamp without time zone NOT NULL,
+	used_at timestamp without time zone,
+	revoked_at timestamp without time zone,
+	created_at timestamp without time zone NOT NULL DEFAULT now(),
+	CONSTRAINT uq_refresh_token_hash UNIQUE (token_hash)
+);
 `
 
 func envOrDefault(key, fallback string) string {
@@ -117,7 +131,7 @@ func openIntegrationTestDB(t *testing.T) *gorm.DB {
 	}
 	// Isolate each test from the last -- child table first, though CASCADE
 	// makes the order irrelevant here.
-	if err := db.Exec("TRUNCATE auth.line_identity, auth.user_account CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE auth.refresh_token, auth.line_identity, auth.user_account CASCADE").Error; err != nil {
 		t.Fatalf("truncate test tables: %v", err)
 	}
 	t.Cleanup(func() {
@@ -298,5 +312,161 @@ func TestLinkLineAccount_ExistingUser_AlreadyLinked_ReturnsConflict(t *testing.T
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+// --- GO-3: refresh token flow ------------------------------------------------
+
+func cookieValue(t *testing.T, w *httptest.ResponseRecorder, name string) (string, bool) {
+	t.Helper()
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c.Value, true
+		}
+	}
+	return "", false
+}
+
+func TestLogin_IssuesRefreshTokenCookieAndRow(t *testing.T) {
+	db := openIntegrationTestDB(t)
+	user := seedUserAccount(t, db, "farmer_login_refresh", "correct-password")
+
+	h := &AuthHandler{DB: db}
+	r := gin.New()
+	r.POST("/login", h.Login)
+
+	body := `{"username":"farmer_login_refresh","password":"correct-password"}`
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	refreshRaw, ok := cookieValue(t, w, refreshCookieName())
+	if !ok || refreshRaw == "" {
+		t.Fatal("expected a refresh token cookie to be set on login")
+	}
+
+	var count int64
+	db.Table("auth.refresh_token").
+		Where("user_id = ? AND used_at IS NULL AND revoked_at IS NULL", user.UserID).
+		Count(&count)
+	if count != 1 {
+		t.Errorf("want exactly 1 active refresh_token row for this user, got %d", count)
+	}
+}
+
+func TestRefreshToken_NoCookie_ReturnsUnauthorized(t *testing.T) {
+	db := openIntegrationTestDB(t)
+	h := &AuthHandler{DB: db}
+	r := gin.New()
+	r.POST("/refresh", h.RefreshToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshToken_ValidToken_RotatesAndReturnsNewCookies(t *testing.T) {
+	db := openIntegrationTestDB(t)
+	user := seedUserAccount(t, db, "farmer_refresh_valid", "correct-password")
+	rawToken, _, err := services.IssueRefreshToken(db, user.UserID)
+	if err != nil {
+		t.Fatalf("seed refresh token: %v", err)
+	}
+
+	h := &AuthHandler{DB: db}
+	r := gin.New()
+	r.POST("/refresh", h.RefreshToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: refreshCookieName(), Value: rawToken})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	if _, ok := cookieValue(t, w, jwtCookieName()); !ok {
+		t.Error("expected a new access token cookie")
+	}
+	newRefresh, ok := cookieValue(t, w, refreshCookieName())
+	if !ok || newRefresh == "" {
+		t.Fatal("expected a new refresh token cookie")
+	}
+	if newRefresh == rawToken {
+		t.Error("expected the refresh token to rotate, got the same value back")
+	}
+
+	// The presented token must now be marked used, not just superseded.
+	var usedCount int64
+	db.Table("auth.refresh_token").
+		Where("user_id = ? AND used_at IS NOT NULL", user.UserID).
+		Count(&usedCount)
+	if usedCount != 1 {
+		t.Errorf("want exactly 1 used refresh_token row, got %d", usedCount)
+	}
+}
+
+func TestRefreshToken_AlreadyUsedToken_ReturnsUnauthorized(t *testing.T) {
+	db := openIntegrationTestDB(t)
+	user := seedUserAccount(t, db, "farmer_refresh_replay", "correct-password")
+	rawToken, _, err := services.IssueRefreshToken(db, user.UserID)
+	if err != nil {
+		t.Fatalf("seed refresh token: %v", err)
+	}
+	// Redeem it once for real, exactly like a legitimate refresh would.
+	if _, _, err := services.RotateRefreshToken(db, rawToken); err != nil {
+		t.Fatalf("first rotation should succeed: %v", err)
+	}
+
+	h := &AuthHandler{DB: db}
+	r := gin.New()
+	r.POST("/refresh", h.RefreshToken)
+
+	// Replaying the same (now-used) raw token -- e.g. a stolen copy used
+	// after the legitimate client already rotated it.
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: refreshCookieName(), Value: rawToken})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshToken_ExpiredToken_ReturnsUnauthorized(t *testing.T) {
+	db := openIntegrationTestDB(t)
+	user := seedUserAccount(t, db, "farmer_refresh_expired", "correct-password")
+	rawToken, _, err := services.IssueRefreshToken(db, user.UserID)
+	if err != nil {
+		t.Fatalf("seed refresh token: %v", err)
+	}
+	if err := db.Table("auth.refresh_token").
+		Where("user_id = ?", user.UserID).
+		Update("expires_at", "2000-01-01").Error; err != nil {
+		t.Fatalf("backdate refresh token: %v", err)
+	}
+
+	h := &AuthHandler{DB: db}
+	r := gin.New()
+	r.POST("/refresh", h.RefreshToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: refreshCookieName(), Value: rawToken})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d (body=%s)", w.Code, w.Body.String())
 	}
 }
