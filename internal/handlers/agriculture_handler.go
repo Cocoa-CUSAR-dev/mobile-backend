@@ -177,13 +177,28 @@ func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 		return
 	}
 
-	// Re-sign the session cookie so it carries the "farmer" role that was just granted — otherwise the caller's next request (e.g. POST /farms, which requires "farmer") would 403 against their now-stale old token.
+	// Re-sign the session so it carries the "farmer" role that was just granted — otherwise the caller's next request (e.g. POST /farms, which requires "farmer") would 403 against their now-stale old token.
 	// Best-effort: if this fails, the profile was still created successfully;
-	// worst case the user has to log out/in to pick up the new role.
-	_ = reissueTokenCookie(c, h.DB, userID)
+	// worst case the user has to log out/in to pick up the new role. On
+	// failure newToken is "" and omitempty drops it from the response
+	// entirely -- a web client keeps using its old (still valid until the
+	// role check) token instead of getting an empty string that would
+	// overwrite it and log them out right after a successful registration.
+	newToken, err := reissueTokenCookie(c, h.DB, userID)
+	if err != nil {
+		fmt.Println("reissueTokenCookie after RegisterFarmerProfile:", err)
+	}
 
-	// 5. Response กลับ
-	c.JSON(http.StatusOK, req)
+	// 5. Response กลับ -- flat farmer fields (unchanged shape) plus token.
+	c.JSON(http.StatusOK, registerFarmerProfileResponse{RegisterFarmerProfileRequest: req, Token: newToken})
+}
+
+type registerFarmerProfileResponse struct {
+	RegisterFarmerProfileRequest
+	// web clients (no usable cookie cross-origin, see auth_middleware.go)
+	// need this to update their stored Authorization: Bearer value.
+	// omitempty: see the no-token-on-failure note above.
+	Token string `json:"token,omitempty"`
 }
 
 func (h *AgricultureHandler) RegisterFarm(c *gin.Context) {
