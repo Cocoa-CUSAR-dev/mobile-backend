@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"go-server-mobile/internal/models"
 	"net/http"
 	"time"
@@ -84,10 +85,19 @@ func (h *ProcessingHandler) RegisterProcessor(c *gin.Context) {
 
 	// Re-sign the session so it carries the "processor" role that was just
 	// granted — see reissueTokenCookie's doc comment. Also returned in the
-	// body so a web client can update its stored Bearer token.
-	newToken, _ := reissueTokenCookie(c, h.DB, userID)
+	// body so a web client can update its stored Bearer token. On failure,
+	// newToken is "" -- omit "token" entirely rather than shipping an empty
+	// string that would overwrite a web client's still-good token.
+	newToken, err := reissueTokenCookie(c, h.DB, userID)
+	if err != nil {
+		fmt.Println("reissueTokenCookie after RegisterProcessor:", err)
+	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "ลงทะเบียน Processor สำเร็จ", "token": newToken})
+	resp := gin.H{"message": "ลงทะเบียน Processor สำเร็จ"}
+	if newToken != "" {
+		resp["token"] = newToken
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *ProcessingHandler) RegisterStation(c *gin.Context) {

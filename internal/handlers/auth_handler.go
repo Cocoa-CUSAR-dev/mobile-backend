@@ -165,20 +165,16 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	var user models.UserAccount
-	if err := h.DB.Table("auth.user_account").Where("user_id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่พบบัญชีผู้ใช้"})
-		return
-	}
-
-	roles := services.ResolveRoles(h.DB, userID)
-	accessToken, maxAge, err := services.GenerateToken(user.UserID, user.Username, roles)
+	// reissueTokenCookie already does the user lookup + ResolveRoles +
+	// GenerateToken + SetCookie sequence this handler used to hand-roll
+	// separately -- reusing it here means a future change to token issuance
+	// only has to happen in one place.
+	accessToken, err := reissueTokenCookie(c, h.DB, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
 		return
 	}
 
-	c.SetCookie(jwtCookieName(), accessToken, maxAge, "/", "", false, true)
 	c.SetCookie(refreshCookieName(), newRefreshToken, services.RefreshTokenExpirationSeconds(), "/", "", false, true)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -278,14 +274,15 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 
 	// LinkLineAccount ใช้แทน Login สำหรับ flow "ผูกบัญชี LINE" (LIFF) — ต้องออก
 	// session token ให้เหมือนกัน ไม่งั้นเกษตรกรที่เข้ามาทางนี้จะไม่มีทาง auth เลย
-	// (เดิมฟังก์ชันนี้ไม่ตั้งคุกกี้และไม่คืน token ใด ๆ -- ช่องโหว่จริง). ตั้งคุกกี้ไว้ด้วย
-	// เพื่อความสมมาตรกับ Login แต่ตัวที่ client เว็บพึ่งได้จริงคือ "token" ในนี้
-	token, maxAge, err := services.GenerateToken(user.UserID, user.Username, roles)
+	// (เดิมฟังก์ชันนี้ไม่ตั้งคุกกี้และไม่คืน token ใด ๆ -- ช่องโหว่จริง). ใช้
+	// reissueTokenCookie ตัวเดียวกับ Register*/RefreshToken แทนการเขียนเอง
+	// ซ้ำ (ตั้งคุกกี้ให้เพื่อความสมมาตรกับ Login แต่ตัวที่ client เว็บพึ่งได้จริง
+	// คือ "token" ในนี้)
+	token, err := reissueTokenCookie(c, h.DB, user.UserID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถสร้าง token ได้"})
 		return
 	}
-	c.SetCookie(jwtCookieName(), token, maxAge, "/", "", false, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":      user.UserID.String(),
