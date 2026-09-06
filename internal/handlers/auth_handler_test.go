@@ -228,7 +228,7 @@ func TestReissueTokenCookie_ReachesDB(t *testing.T) {
 				c.JSON(http.StatusInternalServerError, gin.H{"panic": true})
 			}
 		}()
-		_ = reissueTokenCookie(c, (&AuthHandler{}).DB, uuid.New())
+		_, _ = reissueTokenCookie(c, (&AuthHandler{}).DB, uuid.New())
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
