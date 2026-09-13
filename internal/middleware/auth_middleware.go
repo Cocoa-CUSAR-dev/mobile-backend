@@ -4,10 +4,32 @@ import (
 	"net/http"
 	"os"
 	"fmt"
+	"strings"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// resolveTokenString reads the JWT from whichever source the caller used:
+// Authorization: Bearer <token> first (browser web clients -- cookies don't
+// survive the cross-origin round trip from a GitHub Pages / LIFF-hosted
+// frontend to this API, see mobile-app's service_provider.dart), falling
+// back to the jwtName cookie (native clients that still send it, and the
+// same-origin static/liff-test/*.html kit).
+func resolveTokenString(c *gin.Context, jwtName string) (string, bool) {
+	authHeader := c.GetHeader("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		if token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")); token != "" {
+			return token, true
+		}
+	}
+
+	if cookieToken, err := c.Cookie(jwtName); err == nil && cookieToken != "" {
+		return cookieToken, true
+	}
+
+	return "", false
+}
 
 func JwtAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -16,9 +38,9 @@ func JwtAuthMiddleware() gin.HandlerFunc {
 		fmt.Println("--- [Debug Auth Middleware] ---")
 		fmt.Printf("JWT Name Key: '%s'\n", jwtName)
 		fmt.Printf("Secret Key Length: %d\n", len(secretKey))
-		tokenString, err := c.Cookie(jwtName)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Session expired, please login again" + jwtName })
+		tokenString, ok := resolveTokenString(c, jwtName)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Session expired, please login again (%s)", jwtName)})
 			c.Abort()
 			return
 		}

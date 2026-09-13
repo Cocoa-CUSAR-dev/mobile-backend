@@ -177,13 +177,28 @@ func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 		return
 	}
 
-	// Re-sign the session cookie so it carries the "farmer" role that was just granted — otherwise the caller's next request (e.g. POST /farms, which requires "farmer") would 403 against their now-stale old token.
+	// Re-sign the session so it carries the "farmer" role that was just granted — otherwise the caller's next request (e.g. POST /farms, which requires "farmer") would 403 against their now-stale old token.
 	// Best-effort: if this fails, the profile was still created successfully;
-	// worst case the user has to log out/in to pick up the new role.
-	_ = reissueTokenCookie(c, h.DB, userID)
+	// worst case the user has to log out/in to pick up the new role. On
+	// failure newToken is "" and omitempty drops it from the response
+	// entirely -- a web client keeps using its old (still valid until the
+	// role check) token instead of getting an empty string that would
+	// overwrite it and log them out right after a successful registration.
+	newToken, err := reissueTokenCookie(c, h.DB, userID)
+	if err != nil {
+		fmt.Println("reissueTokenCookie after RegisterFarmerProfile:", err)
+	}
 
-	// 5. Response กลับ
-	c.JSON(http.StatusOK, req)
+	// 5. Response กลับ -- flat farmer fields (unchanged shape) plus token.
+	c.JSON(http.StatusOK, registerFarmerProfileResponse{RegisterFarmerProfileRequest: req, Token: newToken})
+}
+
+type registerFarmerProfileResponse struct {
+	RegisterFarmerProfileRequest
+	// web clients (no usable cookie cross-origin, see auth_middleware.go)
+	// need this to update their stored Authorization: Bearer value.
+	// omitempty: see the no-token-on-failure note above.
+	Token string `json:"token,omitempty"`
 }
 
 func (h *AgricultureHandler) RegisterFarm(c *gin.Context) {
@@ -336,10 +351,14 @@ func (h *AgricultureHandler) GetMyFarms(c *gin.Context) {
 
 	// 1. ใช้ Joins ตารางกลาง (FarmerFarm) เพื่อกรองข้อมูล
 	// 2. ใช้ Preload("Plots") ตรงๆ โดยไม่ต้องใช้ .Table() ข้างใน
+	// GO-6: paginated, with a stable order (farm_id) since Limit/Offset
+	// without one can return a row twice or skip one across pages.
 	err := h.DB.Debug().Model(&models.Farm{}).
 		Table("agriculture.farm").
 		Joins("JOIN agriculture.farmer_farm ON agriculture.farmer_farm.farm_id = agriculture.farm.farm_id").
 		Where("agriculture.farmer_farm.farmer_id = ?", userID).
+		Order("agriculture.farm.farm_id").
+		Scopes(Paginate(c)).
 		Preload("Plots"). // <--- เรียกชื่อ Field ใน Struct ตรงๆ
 		Find(&farms).Error
 
@@ -372,6 +391,9 @@ func (h *AgricultureHandler) GetMyPlots(c *gin.Context) {
 		Where("agriculture.farmer_farm.farmer_id = ?", userID).
 		// จัดกลุ่มข้อมูล (Optional: กรณีมีการ Join ซ้ำซ้อน)
 		Group("agriculture.plot.plot_id").
+		// GO-6: paginated, ordered by plot_id for stable paging.
+		Order("agriculture.plot.plot_id").
+		Scopes(Paginate(c)).
 		Find(&plots).Error
 
 	if err != nil {

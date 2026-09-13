@@ -82,11 +82,21 @@ func (h *CollectionHandler) RegisterHubCollector(c *gin.Context) {
 
 	tx.Commit()
 
-	// Re-sign the session cookie so it carries the "hub_collector" role
-	// that was just granted — see reissueTokenCookie's doc comment.
-	_ = reissueTokenCookie(c, h.DB, userID)
+	// Re-sign the session so it carries the "hub_collector" role that was
+	// just granted — see reissueTokenCookie's doc comment. Also returned in
+	// the body so a web client can update its stored Bearer token. On
+	// failure, newToken is "" -- omit "token" entirely rather than shipping
+	// an empty string that would overwrite a web client's still-good token.
+	newToken, err := reissueTokenCookie(c, h.DB, userID)
+	if err != nil {
+		fmt.Println("reissueTokenCookie after RegisterHubCollector:", err)
+	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "ลงทะเบียน Collector สำเร็จ"})
+	resp := gin.H{"message": "ลงทะเบียน Collector สำเร็จ"}
+	if newToken != "" {
+		resp["token"] = newToken
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *CollectionHandler) RegisterHub(c *gin.Context) {
@@ -149,11 +159,18 @@ func (h *CollectionHandler) GetMyHub(c *gin.Context) {
 	userID := val.(uuid.UUID)
 
 	// 1. ดึง HUB ทั้งหมดของ user
+	// GO-6: paginated (a collector realistically has few hubs, but no
+	// hard limit exists in the schema). The harvests fetched below span
+	// every hub on this page, not paginated separately -- splitting that
+	// by page boundary would cut a hub's harvest list at an arbitrary
+	// point, which is worse than leaving it as one bounded-by-hubs fetch.
 	var hubs []models.Hub
 	err := h.DB.Table("processing.hub").
 		Select("processing.hub.*").
 		Joins("JOIN processing.hub_collector ON processing.hub_collector.hub_id = processing.hub.hub_id").
 		Where("processing.hub_collector.user_id = ?", userID).
+		Order("processing.hub.hub_id").
+		Scopes(Paginate(c)).
 		Find(&hubs).Error
 
 	if err != nil {
@@ -237,7 +254,10 @@ func (h *CollectionHandler) GetMyHarvests(c *gin.Context) {
 		// Left Join ข้อมูลการจับคู่ Batch
 		Joins("LEFT JOIN collection.harvest_collection hc ON hc.harvest_id = collection.harvest.harvest_id").
 		Where("hc_auth.user_id = ?", userID).
-		Order("collection.harvest.harvest_date DESC").
+		// GO-6: harvest_id tiebreaker added so rows sharing a harvest_date
+		// don't reshuffle across pages; paginated via the shared scope.
+		Order("collection.harvest.harvest_date DESC, collection.harvest.harvest_id").
+		Scopes(Paginate(c)).
 		Find(&results).Error
 
 	if err != nil {
