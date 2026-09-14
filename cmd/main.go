@@ -132,6 +132,7 @@ func main() {
 		protected.GET("/tasks", formHandler.GetTasks)
 		protected.POST("/tasks", formHandler.SubmitTask)
 		protected.GET("/tasks/:taskId", formHandler.GetTaskResponse)
+		protected.GET("/tasks/:taskId/responses", formHandler.GetTaskResponses)
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}

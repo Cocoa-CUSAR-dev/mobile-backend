@@ -128,6 +128,13 @@ func dissectAnswer(tx *gorm.DB, handler string, answer map[string]interface{}) e
 type SubmitFormRequest struct {
 	TaskID string                 `json:"task_id" binding:"required"`
 	Answer map[string]interface{} `json:"answer" binding:"required"`
+	// Which response to edit, for PUT /tasks only. Optional so the mobile
+	// app keeps working before its own fix lands; when omitted,
+	// UpdateTaskResponse edits the caller's MOST RECENT response for the
+	// task. Either way exactly one row is touched -- see the predicate in
+	// UpdateTaskResponse for why that matters now that one task can hold
+	// several responses.
+	ResponseID string `json:"response_id"`
 }
 
 // 1. GET /tasks — ดูงานทั้งหมด (เหมือนเดิม)
@@ -152,17 +159,53 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 			t.open_at,
 			t.close_at,
 			tf.handler,
+			-- A multi-submit form is never "done" just because one response
+			-- exists -- the whole point is that a farmer files several rows
+			-- against the same task (three grades for one harvest). Marking
+			-- it COMPLETED after the first would hide the task and make the
+			-- second submission unreachable, which is exactly what the
+			-- chatbot picker also had to stop doing. It also matters to the
+			-- Flutter app specifically: dynamic_register_page.dart decides
+			-- edit-vs-create with status == 'COMPLETED', so reporting
+			-- COMPLETED would make the app PUT over the previous row instead
+			-- of POSTing a new one. IN_PROGRESS is unknown to the app's
+			-- switches, which both fall through to the NOT_STARTED
+			-- presentation -- safe, and the create path stays selected.
+			--
+			-- Phase 1 has no explicit "I'm finished" state to put here (that
+			-- needs form.assignment, which is Phase 2), so such a task stays
+			-- IN_PROGRESS until close_at passes. Named as a known cost in
+			-- the design doc, not an oversight.
+			--
+			-- The multi-submit arm is written as its own complete ladder so
+			-- the single-submit arm below keeps its original precedence
+			-- exactly (COMPLETED wins over OVERDUE, as it always has).
 			CASE
-				WHEN r.response_id IS NOT NULL THEN 'COMPLETED'
+				WHEN COALESCE(tf.is_multiple_submit, FALSE) THEN
+					CASE
+						WHEN NOW() > t.close_at THEN 'OVERDUE'
+						WHEN has_response.ok THEN 'IN_PROGRESS'
+						ELSE 'NOT_STARTED'
+					END
+				WHEN has_response.ok THEN 'COMPLETED'
 				WHEN NOW() > t.close_at THEN 'OVERDUE'
 				ELSE 'NOT_STARTED'
 			END AS status
 		FROM form.task t
 		LEFT JOIN form.task_form tf
 			ON t.task_id = tf.task_id
-		LEFT JOIN form.response r
-			ON t.task_id = r.task_log_id
-			AND r.user_id = ?
+		-- EXISTS, not a LEFT JOIN onto form.response: joining multiplied the
+		-- task row once per response, which was invisible while a task could
+		-- only ever have one but would list the same task three times the
+		-- moment a farmer files three grade rows against it. Only "does any
+		-- response exist" was ever needed here.
+		CROSS JOIN LATERAL (
+			SELECT EXISTS (
+				SELECT 1 FROM form.response r
+				WHERE r.task_log_id = t.task_id
+				  AND r.user_id = ?
+			) AS ok
+		) AS has_response
 		WHERE (
 			NULLIF(?, '')::date IS NULL
 			OR DATE(t.open_at) = NULLIF(?, '')::date
@@ -448,8 +491,15 @@ func (h *FormHandler) submitAnswerForUser(
 
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		response := map[string]interface{}{
-			"response_id":  uuid.New(),
-			"task_log_id":  taskID, // เก็บไว้อ้างอิงในระบบ DB
+			"response_id": uuid.New(),
+			"task_log_id": taskID, // เก็บไว้อ้างอิงในระบบ DB
+			// The column, its index, its FK and the Go model field
+			// (models.Response.TaskFormID) all already existed -- this insert
+			// just never set it, leaving task_form_id NULL on every row in
+			// the database. Without it, N responses on one task are
+			// indistinguishable by form, which is what multi-submit needs to
+			// address them. See the multi-submit design doc's blocker 3.
+			"task_form_id": taskForm.FormID,
 			"user_id":      userID,
 			"submitted_at": time.Now(),
 			"answer":       answer, // ตัวนี้จะมี task_id อยู่ข้างในแล้ว
@@ -483,9 +533,16 @@ func (h *FormHandler) GetTaskResponse(c *gin.Context) {
 		Answer []byte
 	}
 
+	// Take() had no ORDER BY, so with several responses on one task which
+	// row came back was undefined. Deliberately still ONE row and still a
+	// bare answer object -- the Flutter app consumes this shape directly --
+	// but now it is explicitly the most recent one. Callers that need all
+	// of them (and the response_id needed to edit a specific one) use
+	// GET /tasks/:taskId/responses below.
 	err := h.DB.Table("form.response").
 		Select("answer").
 		Where("task_log_id = ? AND user_id = ?", taskID, userID).
+		Order("submitted_at DESC NULLS LAST").
 		Take(&raw).Error
 
 	if err != nil {
@@ -500,6 +557,69 @@ func (h *FormHandler) GetTaskResponse(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, answer)
+}
+
+// TaskResponseItem is one row of GET /tasks/:taskId/responses.
+type TaskResponseItem struct {
+	ResponseID  uuid.UUID              `json:"response_id"`
+	TaskFormID  *uuid.UUID             `json:"task_form_id"`
+	SubmittedAt *time.Time             `json:"submitted_at"`
+	Status      string                 `json:"status"`
+	Answer      map[string]interface{} `json:"answer"`
+}
+
+// 3b. GET /tasks/:taskId/responses — every submission this farmer has filed
+// against the task, newest first.
+//
+// Added rather than changing GetTaskResponse's shape: that endpoint returns
+// a bare answer object the Flutter app parses directly, and turning it into
+// an array would break the app. This is also where a caller gets the
+// response_id that PUT /tasks now takes to edit one specific submission --
+// without it, "edit the third grade row" isn't expressible.
+func (h *FormHandler) GetTaskResponses(c *gin.Context) {
+	val, _ := c.Get("userID")
+	userID := val.(uuid.UUID)
+	taskID := c.Param("taskId")
+
+	var rows []struct {
+		ResponseID  uuid.UUID  `gorm:"column:response_id"`
+		TaskFormID  *uuid.UUID `gorm:"column:task_form_id"`
+		SubmittedAt *time.Time `gorm:"column:submitted_at"`
+		Status      string     `gorm:"column:status"`
+		Answer      []byte     `gorm:"column:answer"`
+	}
+
+	if err := h.DB.Table("form.response").
+		Select("response_id, task_form_id, submitted_at, status, answer").
+		Where("task_log_id = ? AND user_id = ?", taskID, userID).
+		Order("submitted_at DESC NULLS LAST").
+		Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงประวัติการส่งงานได้"})
+		return
+	}
+
+	// Never null in the JSON -- an empty list is a meaningful answer here
+	// ("nothing submitted yet"), and a null would make every caller
+	// special-case it.
+	items := make([]TaskResponseItem, 0, len(rows))
+	for _, row := range rows {
+		var answer map[string]interface{}
+		if len(row.Answer) > 0 {
+			if err := json.Unmarshal(row.Answer, &answer); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเสียหาย"})
+				return
+			}
+		}
+		items = append(items, TaskResponseItem{
+			ResponseID:  row.ResponseID,
+			TaskFormID:  row.TaskFormID,
+			SubmittedAt: row.SubmittedAt,
+			Status:      row.Status,
+			Answer:      answer,
+		})
+	}
+
+	c.JSON(http.StatusOK, items)
 }
 
 // 4. PUT /tasks — แก้ไขงาน (ดึง taskId จาก Payload)
@@ -518,6 +638,19 @@ func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 
 	// แทรก task_id เข้าไปใน answer ใหม่
 	req.Answer["task_id"] = req.TaskID
+
+	// Cheap input validation before the outbound validateSubmission call
+	// below -- a malformed response_id shouldn't cost a round-trip to
+	// web-backend to find out it was malformed.
+	var requestedResponseID *uuid.UUID
+	if req.ResponseID != "" {
+		parsed, err := uuid.Parse(req.ResponseID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "response_id ไม่ถูกต้อง"})
+			return
+		}
+		requestedResponseID = &parsed
+	}
 
 	var taskForm struct {
 		FormID uuid.UUID `gorm:"column:form_id"`
@@ -542,8 +675,41 @@ func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 		return
 	}
 
+	// Resolve exactly ONE response_id before updating anything. The old
+	// predicate here was `task_log_id = ? AND user_id = ?` with no limit,
+	// which updated EVERY response for the task -- harmless while a task
+	// could only ever hold one, but silent data corruption the moment
+	// multi-submit lets a farmer file three grade rows against one harvest
+	// and then edit one of them. See the multi-submit design doc's
+	// blocker 2: this had to land before anything could create a second
+	// response, not after.
+	//
+	// user_id stays in every predicate below as the ownership check -- a
+	// response_id alone would let any authenticated farmer edit someone
+	// else's submission by guessing an id.
+	var targetResponseID uuid.UUID
+	if requestedResponseID != nil {
+		targetResponseID = *requestedResponseID
+	} else {
+		// Caller didn't say which one (the mobile app, until its own fix
+		// lands). Most recent wins -- for a single-response task that IS
+		// the only row, so this preserves today's behaviour exactly.
+		var latest struct {
+			ResponseID uuid.UUID `gorm:"column:response_id"`
+		}
+		if err := h.DB.Table("form.response").
+			Select("response_id").
+			Where("task_log_id = ? AND user_id = ?", req.TaskID, userID).
+			Order("submitted_at DESC NULLS LAST").
+			First(&latest).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบข้อมูลที่ต้องการแก้ไข"})
+			return
+		}
+		targetResponseID = latest.ResponseID
+	}
+
 	result := h.DB.Table("form.response").
-		Where("task_log_id = ? AND user_id = ?", req.TaskID, userID).
+		Where("response_id = ? AND user_id = ?", targetResponseID, userID).
 		Updates(map[string]interface{}{
 			"answer":       req.Answer,
 			"submitted_at": time.Now(),
