@@ -159,6 +159,9 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 			t.open_at,
 			t.close_at,
 			tf.handler,
+			-- Sent so the app can tell a second queued row for the same task
+			-- apart from a conflicting overwrite when it syncs offline work.
+			COALESCE(tf.is_multiple_submit, FALSE) AS is_multiple_submit,
 			-- A multi-submit form is never "done" just because one response
 			-- exists -- the whole point is that a farmer files several rows
 			-- against the same task (three grades for one harvest). Marking
