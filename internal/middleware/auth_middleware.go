@@ -1,10 +1,11 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"os"
-	"fmt"
 	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -35,9 +36,6 @@ func JwtAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		jwtName := os.Getenv("JWT_NAME")
 		secretKey := []byte(os.Getenv("JWT_KEY"))
-		fmt.Println("--- [Debug Auth Middleware] ---")
-		fmt.Printf("JWT Name Key: '%s'\n", jwtName)
-		fmt.Printf("Secret Key Length: %d\n", len(secretKey))
 		tokenString, ok := resolveTokenString(c, jwtName)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Session expired, please login again (%s)", jwtName)})

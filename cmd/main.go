@@ -1,11 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"go-server-mobile/internal/database"
 	"go-server-mobile/internal/handlers"
+	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -16,13 +16,14 @@ import (
 )
 
 func main() {
-	// 1. โหลด Environment
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("ไม่พบไฟล์ .env\n")
-	}
+	// 0. Structured JSON logging (X-2b) -- do this first so every log line
+	// from here on, including the .env warning below, comes out as JSON.
+	logging.Init()
 
-	fmt.Println("JWT_NAME in main:", os.Getenv("JWT_NAME"))
+	// 1. โหลด Environment
+	if err := godotenv.Load(); err != nil {
+		slog.Warn(".env file not found, using system environment variables")
+	}
 
 	// 2. เชื่อมต่อ Database
 	db := database.InitDB()
@@ -38,7 +39,12 @@ func main() {
 	processingHandler := &handlers.ProcessingHandler{DB: db}
 
 	// 4. Setup Router
-	r := gin.Default()
+	// gin.New() instead of gin.Default() -- Default() wires up gin's own
+	// plain-text access logger, which we replace with logging.GinMiddleware()
+	// so request logs are JSON too, same as everything else (X-2b).
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(logging.GinMiddleware())
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
@@ -156,6 +162,7 @@ func main() {
 		port = "8080"
 	}
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("server failed to start: %v", err)
+		slog.Error("server failed to start", "error", err)
+		os.Exit(1)
 	}
 }

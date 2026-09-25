@@ -2,10 +2,9 @@ package handlers
 
 import (
 	"errors"
-	"fmt"
 	"go-server-mobile/internal/models"
 	"go-server-mobile/internal/services"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -131,7 +130,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if refreshToken, _, err := services.IssueRefreshToken(h.DB, user.UserID); err == nil {
 		c.SetCookie(refreshCookieName(), refreshToken, services.RefreshTokenExpirationSeconds(), "/", "", false, true)
 	} else {
-		log.Printf("issue refresh token for user %s: %v", user.UserID, err)
+		slog.Error("failed to issue refresh token", "user_id", user.UserID, "error", err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -259,7 +258,7 @@ func (h *AuthHandler) LinkLineAccount(c *gin.Context) {
 	if err := h.DB.Create(&linkReq).Error; err != nil {
 		// log error จริงไว้ (ก่อนหน้านี้ไม่มีเลย ทำให้ debug ไม่ได้ว่าทำไม
 		// insert พังจริงๆ — ข้อความที่ตอบกลับ user เป็นแค่สรุปแบบเป็นมิตร)
-		fmt.Printf("❌ LinkLineAccount: DB.Create(auth.line_identity) error: %v\n", err)
+		slog.Error("LinkLineAccount: failed to create line_identity", "error", err)
 
 		// auth.line_identity.line_user_id เป็น UNIQUE — ถ้าชนตรงนี้แปลว่า
 		// LINE account นี้ถูกผูกกับบัญชีอื่น (หรือบัญชีนี้เอง) ไปแล้ว ไม่ใช่
