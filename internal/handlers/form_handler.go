@@ -495,13 +495,11 @@ func (h *FormHandler) submitAnswerForUser(
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		response := map[string]interface{}{
 			"response_id": uuid.New(),
-			"task_log_id": taskID, // เก็บไว้อ้างอิงในระบบ DB
-			// The column, its index, its FK and the Go model field
-			// (models.Response.TaskFormID) all already existed -- this insert
-			// just never set it, leaving task_form_id NULL on every row in
-			// the database. Without it, N responses on one task are
-			// indistinguishable by form, which is what multi-submit needs to
-			// address them. See the multi-submit design doc's blocker 3.
+			"task_log_id": taskID, // เก็บไว้อ้างอิงในระบบ DB (DB-1: จริงๆ คือ task_id ไม่ใช่ FK จริง -- ห้ามแก้ความหมาย มี test/query อื่นพึ่งพาอยู่)
+			// task_form_id: the real FK (V9) to form.task_form.form_id -- was
+			// declared but never populated, so any join through it (e.g.
+			// US2-6's diary generation) always found zero rows. taskForm was
+			// already resolved above for validation; just also save it here.
 			"task_form_id": taskForm.FormID,
 			"user_id":      userID,
 			"submitted_at": time.Now(),
