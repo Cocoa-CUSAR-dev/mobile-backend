@@ -5,6 +5,7 @@ import (
 	"go-server-mobile/internal/database"
 	"go-server-mobile/internal/handlers"
 	"go-server-mobile/internal/middleware"
+	"go-server-mobile/internal/requestid"
 	"log"
 	"net/http"
 	"os"
@@ -39,6 +40,8 @@ func main() {
 
 	// 4. Setup Router
 	r := gin.Default()
+	// X-2e: assign/accept a correlation ID before anything else runs.
+	r.Use(requestid.Middleware())
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
