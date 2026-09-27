@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"go-server-mobile/internal/requestid"
 	"go-server-mobile/internal/validation"
 
 	"github.com/gin-gonic/gin"
@@ -216,6 +217,13 @@ func (h *FormHandler) GetTaskForm(c *gin.Context) {
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	// X-2e: this is a second, separate call to web-backend from the one in
+	// form_schema_client.go, and opening a form happens before (and far
+	// more often than) submitting one -- without this the common half of
+	// the flow is the half that cannot be correlated.
+	if requestID := requestid.FromContext(c); requestID != "" {
+		req.Header.Set(requestid.Header, requestID)
+	}
 
 	resp, err := webBackendClient.Do(req)
 	if err != nil {
@@ -394,11 +402,12 @@ func (h *FormHandler) GetLastAnswer(c *gin.Context) {
 // schema? That's a reject too, same as a bad field — we're not writing
 // blind just because Kotlin happened to be down.
 func validateSubmission(
-	fetchSchema func(uuid.UUID) (validation.FormSchema, error),
+	fetchSchema func(uuid.UUID, string) (validation.FormSchema, error),
 	formID uuid.UUID,
+	requestID string,
 	answer map[string]interface{},
 ) ([]validation.FieldError, error) {
-	schema, err := fetchSchema(formID)
+	schema, err := fetchSchema(formID, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -432,7 +441,7 @@ func (h *FormHandler) submitAnswerForUser(
 
 	// Gate: nothing below this point runs until the answer passes. See
 	// validateSubmission above.
-	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, answer)
+	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, requestid.FromContext(c), answer)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
 		return
@@ -533,7 +542,7 @@ func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 	}
 
 	// Gate: nothing below this point runs until the answer passes.
-	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, req.Answer)
+	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, requestid.FromContext(c), req.Answer)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
 		return

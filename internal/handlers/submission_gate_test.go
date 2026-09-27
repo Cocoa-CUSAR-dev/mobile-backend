@@ -22,14 +22,14 @@ func TestValidateSubmission_PassesCleanAnswerThrough(t *testing.T) {
 		Questions: []validation.Question{{FieldName: "note", InputType: "VARCHAR", IsMandatory: true}},
 	}}}
 
-	fetchSchema := func(id uuid.UUID) (validation.FormSchema, error) {
+	fetchSchema := func(id uuid.UUID, _ string) (validation.FormSchema, error) {
 		if id != formID {
 			t.Errorf("want fetchSchema called with %s, got %s", formID, id)
 		}
 		return schema, nil
 	}
 
-	errs, err := validateSubmission(fetchSchema, formID, map[string]interface{}{"note": "ok"})
+	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"note": "ok"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,12 +43,12 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 	schema := validation.FormSchema{Sections: []validation.Section{{
 		Questions: []validation.Question{{FieldName: "quantity_kg", InputType: "INT", IsMandatory: true}},
 	}}}
-	fetchSchema := func(uuid.UUID) (validation.FormSchema, error) { return schema, nil }
+	fetchSchema := func(uuid.UUID, string) (validation.FormSchema, error) { return schema, nil }
 
 	dbWasCalled := false
 	fakeDBWrite := func() { dbWasCalled = true }
 
-	errs, err := validateSubmission(fetchSchema, formID, map[string]interface{}{"quantity_kg": "not-a-number"})
+	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"quantity_kg": "not-a-number"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,11 +70,11 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 func TestValidateSubmission_SchemaFetchFailureFailsClosed(t *testing.T) {
 	// If Kotlin's unreachable or the key's wrong, there's nothing to check
 	// the answer against — has to come back as an error, not a pass.
-	fetchSchema := func(uuid.UUID) (validation.FormSchema, error) {
+	fetchSchema := func(uuid.UUID, string) (validation.FormSchema, error) {
 		return validation.FormSchema{}, errors.New("upstream unavailable")
 	}
 
-	errs, err := validateSubmission(fetchSchema, uuid.New(), map[string]interface{}{"note": "ok"})
+	errs, err := validateSubmission(fetchSchema, uuid.New(), "", map[string]interface{}{"note": "ok"})
 	if err == nil {
 		t.Fatal("want an error when the schema fetch fails, got nil")
 	}
