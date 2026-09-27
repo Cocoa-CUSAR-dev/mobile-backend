@@ -55,3 +55,27 @@ func TestFromContext_EmptyWhenMiddlewareNotRun(t *testing.T) {
 		t.Errorf("want empty string without Middleware, got %q", got)
 	}
 }
+
+func TestFromKeys_ReturnsIDSetByMiddleware(t *testing.T) {
+	// gin's log formatter only gets the key map, so this is the path the
+	// logger in cmd/main.go actually uses -- FromContext is not reachable
+	// from there.
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(contextKey, "inbound-id-123")
+
+	if got := FromKeys(c.Keys); got != "inbound-id-123" {
+		t.Errorf("want the ID the middleware stored, got %q", got)
+	}
+}
+
+func TestFromKeys_FallsBackToDashWhenAbsent(t *testing.T) {
+	// Log lines from before the middleware ran (or from a panic recovered
+	// outside a request) still need to line up in the output.
+	if got := FromKeys(nil); got != "-" {
+		t.Errorf("want %q for a missing ID, got %q", "-", got)
+	}
+	if got := FromKeys(map[any]any{contextKey: ""}); got != "-" {
+		t.Errorf("want %q for an empty ID, got %q", "-", got)
+	}
+}

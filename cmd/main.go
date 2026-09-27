@@ -39,9 +39,29 @@ func main() {
 	processingHandler := &handlers.ProcessingHandler{DB: db}
 
 	// 4. Setup Router
-	r := gin.Default()
-	// X-2e: assign/accept a correlation ID before anything else runs.
+	// gin.Default() is gin.New() + gin.Logger() + gin.Recovery(). We build
+	// the same stack by hand because gin.Logger()'s format is fixed and has
+	// no slot for the request ID: without this, X-Request-Id propagates
+	// correctly between services and still never appears in a log line,
+	// which leaves nothing to correlate. Same reason web-backend sets
+	// logging.pattern.level and chatbot installs a logging filter.
+	r := gin.New()
+	// X-2e: assign/accept a correlation ID before anything else runs, so
+	// the logger below and every handler can see it.
 	r.Use(requestid.Middleware())
+	r.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
+		return fmt.Sprintf("[GIN] %s |%3d| %13v | %15s | %-7s %#v | request_id=%s\n%s",
+			p.TimeStamp.Format("2006/01/02 - 15:04:05"),
+			p.StatusCode,
+			p.Latency,
+			p.ClientIP,
+			p.Method,
+			p.Path,
+			requestid.FromKeys(p.Keys),
+			p.ErrorMessage,
+		)
+	}))
+	r.Use(gin.Recovery())
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")

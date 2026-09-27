@@ -36,3 +36,15 @@ func Middleware() gin.HandlerFunc {
 func FromContext(c *gin.Context) string {
 	return c.GetString(contextKey)
 }
+
+// FromKeys returns the request ID out of a gin context's key map, or "-"
+// if there isn't one. Separate from FromContext because gin's log
+// formatter is handed a LogFormatterParams, which exposes the key map but
+// not the *gin.Context it came from -- see cmd/main.go. gin types
+// that map as map[any]any, not map[string]any like gin.Context.Keys.
+func FromKeys(keys map[any]any) string {
+	if id, ok := keys[contextKey].(string); ok && id != "" {
+		return id
+	}
+	return "-"
+}
