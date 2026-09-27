@@ -3,9 +3,11 @@ package requestid
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func newRouter() *gin.Engine {
@@ -77,5 +79,56 @@ func TestFromKeys_FallsBackToDashWhenAbsent(t *testing.T) {
 	}
 	if got := FromKeys(map[any]any{contextKey: ""}); got != "-" {
 		t.Errorf("want %q for an empty ID, got %q", "-", got)
+	}
+}
+
+func TestMiddleware_ReplacesAnIDThatIsNotSafeToForward(t *testing.T) {
+	// The value is echoed back, logged, and forwarded verbatim to
+	// web-backend. Go's client refuses to write a header holding a control
+	// byte, so trusting one of these would turn a valid form submission
+	// into a 502. Replaced, not rejected: the caller still gets served.
+	cases := map[string]string{
+		"embedded newline": "abc" + string(rune(10)) + "X-Injected: yes",
+		"embedded return":  "abc" + string(rune(13)),
+		"too long":         strings.Repeat("a", 65),
+		"space":            "has a space",
+		"empty":            "",
+	}
+
+	for name, inbound := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRouter()
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			// Set directly: http.Header.Set does not validate, which is the
+			// whole reason this has to be caught here.
+			req.Header[Header] = []string{inbound}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			got := w.Header().Get(Header)
+			if got == inbound {
+				t.Errorf("want %q replaced with a generated ID, got it back unchanged", inbound)
+			}
+			if !validID.MatchString(got) {
+				t.Errorf("want the replacement to be a safe ID, got %q", got)
+			}
+		})
+	}
+}
+
+func TestMiddleware_KeepsAnIDThatIsSafeToForward(t *testing.T) {
+	// A generated UUID is what the other two services send, so it has to
+	// survive the round trip -- otherwise every hop would renumber and
+	// correlation would break at the first boundary.
+	for _, inbound := range []string{uuid.NewString(), "inbound-id-123", "req.1_2-3"} {
+		r := newRouter()
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set(Header, inbound)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if got := w.Header().Get(Header); got != inbound {
+			t.Errorf("want %q kept, got %q", inbound, got)
+		}
 	}
 }

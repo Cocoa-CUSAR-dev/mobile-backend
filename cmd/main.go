@@ -80,9 +80,15 @@ func main() {
 	}
 	if len(corsOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
-			AllowOrigins:     corsOrigins,
-			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-			AllowHeaders:     []string{"Content-Type", "Authorization"},
+			AllowOrigins: corsOrigins,
+			AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
+			// X-Request-Id has to be listed in both: without AllowHeaders the
+			// browser's preflight rejects the whole request as soon as a web
+			// caller starts sending one (the first hop requestid documents),
+			// and without ExposeHeaders the echoed value is invisible to JS,
+			// so the caller cannot log the ID it was given.
+			AllowHeaders:     []string{"Content-Type", "Authorization", requestid.Header},
+			ExposeHeaders:    []string{requestid.Header},
 			AllowCredentials: true,
 		}))
 	}

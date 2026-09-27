@@ -217,6 +217,13 @@ func (h *FormHandler) GetTaskForm(c *gin.Context) {
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	// X-2e: this is a second, separate call to web-backend from the one in
+	// form_schema_client.go, and opening a form happens before (and far
+	// more often than) submitting one -- without this the common half of
+	// the flow is the half that cannot be correlated.
+	if requestID := requestid.FromContext(c); requestID != "" {
+		req.Header.Set(requestid.Header, requestID)
+	}
 
 	resp, err := webBackendClient.Do(req)
 	if err != nil {

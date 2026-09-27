@@ -3,6 +3,8 @@
 package requestid
 
 import (
+	"regexp"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -14,6 +16,19 @@ const Header = "X-Request-Id"
 
 const contextKey = "requestID"
 
+// validID is what an inbound X-Request-Id has to look like to be trusted.
+// Anything else is replaced with a fresh one rather than rejected -- the
+// caller gets a working request, just not the ID it asked for.
+//
+// Worth validating because the value is echoed back, written to every log
+// line for the request, and forwarded verbatim to web-backend. Go's HTTP
+// client refuses to write a header containing a control byte, so without
+// this an inbound ID with a newline in it would make fetchFormSchema fail
+// and take the whole form submission down with a 502 -- a valid answer
+// rejected because of a header. web-backend and chatbot enforce the same
+// shape, so an ID that survives here survives the next hop too.
+var validID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
 // Middleware accepts an inbound X-Request-Id (from mobile-app, or a
 // service-to-service caller) or generates one, stores it on the gin
 // context for handlers to read and forward downstream, and echoes it back
@@ -22,7 +37,7 @@ const contextKey = "requestID"
 func Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.GetHeader(Header)
-		if id == "" {
+		if !validID.MatchString(id) {
 			id = uuid.NewString()
 		}
 		c.Set(contextKey, id)
