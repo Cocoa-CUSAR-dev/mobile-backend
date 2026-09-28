@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"go-server-mobile/internal/database"
 	"go-server-mobile/internal/handlers"
+	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
 	"go-server-mobile/internal/requestid"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -17,13 +17,14 @@ import (
 )
 
 func main() {
-	// 1. โหลด Environment
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("ไม่พบไฟล์ .env\n")
-	}
+	// 0. Structured JSON logging (X-2b) -- do this first so every log line
+	// from here on, including the .env warning below, comes out as JSON.
+	logging.Init()
 
-	fmt.Println("JWT_NAME in main:", os.Getenv("JWT_NAME"))
+	// 1. โหลด Environment
+	if err := godotenv.Load(); err != nil {
+		slog.Warn(".env file not found, using system environment variables")
+	}
 
 	// 2. เชื่อมต่อ Database
 	db := database.InitDB()
@@ -39,28 +40,14 @@ func main() {
 	processingHandler := &handlers.ProcessingHandler{DB: db}
 
 	// 4. Setup Router
-	// gin.Default() is gin.New() + gin.Logger() + gin.Recovery(). We build
-	// the same stack by hand because gin.Logger()'s format is fixed and has
-	// no slot for the request ID: without this, X-Request-Id propagates
-	// correctly between services and still never appears in a log line,
-	// which leaves nothing to correlate. Same reason web-backend sets
-	// logging.pattern.level and chatbot installs a logging filter.
+	// gin.New() instead of gin.Default() -- Default() wires up gin's own
+	// plain-text access logger, which we replace with logging.GinMiddleware()
+	// so request logs are JSON too, same as everything else (X-2b).
 	r := gin.New()
 	// X-2e: assign/accept a correlation ID before anything else runs, so
 	// the logger below and every handler can see it.
 	r.Use(requestid.Middleware())
-	r.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
-		return fmt.Sprintf("[GIN] %s |%3d| %13v | %15s | %-7s %#v | request_id=%s\n%s",
-			p.TimeStamp.Format("2006/01/02 - 15:04:05"),
-			p.StatusCode,
-			p.Latency,
-			p.ClientIP,
-			p.Method,
-			p.Path,
-			requestid.FromKeys(p.Keys),
-			p.ErrorMessage,
-		)
-	}))
+	r.Use(logging.GinMiddleware())
 	r.Use(gin.Recovery())
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
@@ -186,6 +173,7 @@ func main() {
 		port = "8080"
 	}
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("server failed to start: %v", err)
+		slog.Error("server failed to start", "error", err)
+		os.Exit(1)
 	}
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"go-server-mobile/internal/models"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -89,7 +90,7 @@ func (h *CollectionHandler) RegisterHubCollector(c *gin.Context) {
 	// an empty string that would overwrite a web client's still-good token.
 	newToken, err := reissueTokenCookie(c, h.DB, userID)
 	if err != nil {
-		fmt.Println("reissueTokenCookie after RegisterHubCollector:", err)
+		slog.Error("reissueTokenCookie failed after RegisterHubCollector", "error", err)
 	}
 
 	resp := gin.H{"message": "ลงทะเบียน Collector สำเร็จ"}
@@ -206,7 +207,7 @@ func (h *CollectionHandler) GetMyHub(c *gin.Context) {
 		Find(&harvests).Error
 
 	if err != nil {
-		fmt.Println("Error fetching harvests:", err)
+		slog.Error("failed to fetch harvests", "error", err)
 		harvests = []models.Harvest{}
 	}
 

@@ -2,6 +2,7 @@ package database
 
 import (
     "fmt"
+    "log/slog"
     "os"
     "github.com/joho/godotenv"
     "gorm.io/driver/postgres"
@@ -13,7 +14,7 @@ func InitDB() *gorm.DB {
     // 1. โหลดไฟล์ .env
     err := godotenv.Load()
     if err != nil {
-        fmt.Println("⚠️ Warning: .env file not found, using system environment variables")
+        slog.Warn(".env file not found, using system environment variables")
     }
 
     // 2. ดึงค่าจาก Environment Variables
@@ -52,8 +53,7 @@ func InitDB() *gorm.DB {
     })
 
     if err != nil {
-        // พยายาม print error ที่อ่านง่ายขึ้น
-        fmt.Printf("❌ Database Connection Error: %v\n", err)
+        slog.Error("database connection failed", "error", err)
         panic("Failed to connect to database")
     }
 
@@ -62,6 +62,6 @@ func InitDB() *gorm.DB {
     sqlDB.SetMaxIdleConns(10)
     sqlDB.SetMaxOpenConns(100)
 
-    fmt.Println("✅ Database connected successfully to Neon Tech")
+    slog.Info("database connected successfully")
     return db
 }
