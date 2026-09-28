@@ -1,11 +1,11 @@
 // Package logging sets up structured JSON logging for the service (X-2a
 // convention, applied here for X-2b): timestamp, level, service, request_id,
-// message. request_id isn't populated yet -- that's X-2e -- but any handler
-// that later attaches one via slog.With("request_id", ...) or a context
-// value needs no changes here to show up as a top-level JSON field.
+// message. request_id on access-log lines comes from requestid.Middleware
+// (X-2e), which has to run before GinMiddleware -- see cmd/main.go.
 package logging
 
 import (
+	"go-server-mobile/internal/requestid"
 	"log/slog"
 	"os"
 	"time"
@@ -39,6 +39,7 @@ func GinMiddleware() gin.HandlerFunc {
 		c.Next()
 
 		slog.Info("http_request",
+			"request_id", requestid.FromContext(c),
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
