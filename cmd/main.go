@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -25,6 +28,20 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		slog.Warn(".env file not found, using system environment variables")
 	}
+
+	// X-2d: error tracking. An empty Dsn disables the SDK entirely (no
+	// error, no panic) -- safe to call unconditionally in local dev/CI
+	// where SENTRY_DSN isn't set.
+	if err := sentry.Init(sentry.ClientOptions{
+		Dsn:              os.Getenv("SENTRY_DSN"),
+		Environment:      os.Getenv("SENTRY_ENVIRONMENT"),
+		TracesSampleRate: 0.0,
+	}); err != nil {
+		// Init only errors on a malformed DSN, not a missing one -- worth
+		// surfacing since it means the SDK silently isn't capturing.
+		fmt.Printf("sentry.Init failed: %v\n", err)
+	}
+	defer sentry.Flush(2 * time.Second)
 
 	// 2. เชื่อมต่อ Database
 	db := database.InitDB()
@@ -49,6 +66,11 @@ func main() {
 	r.Use(requestid.Middleware())
 	r.Use(logging.GinMiddleware())
 	r.Use(gin.Recovery())
+	// X-2d: reports panics recovered by gin.Recovery() above to Sentry --
+	// registered after it (so it sees the panic before Recovery's own defer
+	// does, same relative order as the documented gin.Default()+sentrygin
+	// pattern) -- a no-op when the SDK is disabled.
+	r.Use(sentrygin.New(sentrygin.Options{}))
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
