@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"go-server-mobile/internal/requestid"
 	"go-server-mobile/internal/validation"
 
 	"github.com/google/uuid"
@@ -32,7 +33,11 @@ var formSchemaCache sync.Map
 // uses above, since SubmitTaskForUser has no farmer JWT to forward. Needs
 // KOTLIN_SERVICE_KEY set to the same value as web-backend's
 // CHATBOT_SERVICE_KEY — no code change needed on that side.
-func fetchFormSchema(formID uuid.UUID) (validation.FormSchema, error) {
+// requestID (X-2e) is forwarded as-is to web-backend so a single farmer
+// action can be traced across both services' logs -- empty is fine (a
+// cache hit path or a test never sets one), web-backend generates its own
+// if the header is absent.
+func fetchFormSchema(formID uuid.UUID, requestID string) (validation.FormSchema, error) {
 	key := formID.String()
 	if cached, ok := formSchemaCache.Load(key); ok {
 		entry := cached.(formSchemaCacheEntry)
@@ -55,6 +60,9 @@ func fetchFormSchema(formID uuid.UUID) (validation.FormSchema, error) {
 		return validation.FormSchema{}, fmt.Errorf("สร้างคำขอไปยังระบบฟอร์มไม่สำเร็จ: %w", err)
 	}
 	req.Header.Set("X-Service-Key", serviceKey)
+	if requestID != "" {
+		req.Header.Set(requestid.Header, requestID)
+	}
 
 	resp, err := webBackendClient.Do(req)
 	if err != nil {

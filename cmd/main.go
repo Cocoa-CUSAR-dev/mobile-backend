@@ -5,6 +5,7 @@ import (
 	"go-server-mobile/internal/handlers"
 	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
+	"go-server-mobile/internal/requestid"
 	"log/slog"
 	"net/http"
 	"os"
@@ -43,8 +44,11 @@ func main() {
 	// plain-text access logger, which we replace with logging.GinMiddleware()
 	// so request logs are JSON too, same as everything else (X-2b).
 	r := gin.New()
-	r.Use(gin.Recovery())
+	// X-2e: assign/accept a correlation ID before anything else runs, so
+	// the logger below and every handler can see it.
+	r.Use(requestid.Middleware())
 	r.Use(logging.GinMiddleware())
+	r.Use(gin.Recovery())
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
@@ -63,9 +67,15 @@ func main() {
 	}
 	if len(corsOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
-			AllowOrigins:     corsOrigins,
-			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-			AllowHeaders:     []string{"Content-Type", "Authorization"},
+			AllowOrigins: corsOrigins,
+			AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
+			// X-Request-Id has to be listed in both: without AllowHeaders the
+			// browser's preflight rejects the whole request as soon as a web
+			// caller starts sending one (the first hop requestid documents),
+			// and without ExposeHeaders the echoed value is invisible to JS,
+			// so the caller cannot log the ID it was given.
+			AllowHeaders:     []string{"Content-Type", "Authorization", requestid.Header},
+			ExposeHeaders:    []string{requestid.Header},
 			AllowCredentials: true,
 		}))
 	}
@@ -138,6 +148,7 @@ func main() {
 		protected.GET("/tasks", formHandler.GetTasks)
 		protected.POST("/tasks", formHandler.SubmitTask)
 		protected.GET("/tasks/:taskId", formHandler.GetTaskResponse)
+		protected.GET("/tasks/:taskId/responses", formHandler.GetTaskResponses)
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-server-mobile/internal/requestid"
+
 	"github.com/google/uuid"
 )
 
@@ -35,7 +37,7 @@ func TestFetchFormSchema_SendsServiceKeyAndParsesResponse(t *testing.T) {
 
 	withFormSchemaEnv(t, server.URL, "test-secret")
 
-	schema, err := fetchFormSchema(formID)
+	schema, err := fetchFormSchema(formID, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,11 +52,32 @@ func TestFetchFormSchema_SendsServiceKeyAndParsesResponse(t *testing.T) {
 	}
 
 	// second call should hit the cache, not Kotlin again
-	if _, err := fetchFormSchema(formID); err != nil {
+	if _, err := fetchFormSchema(formID, ""); err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
 	}
 	if hits != 1 {
 		t.Errorf("want 1 request to web-backend (second call cached), got %d", hits)
+	}
+}
+
+func TestFetchFormSchema_ForwardsRequestID(t *testing.T) {
+	formID := uuid.New()
+	var gotRequestID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequestID = r.Header.Get(requestid.Header)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"value":{"sections":[]},"error":null}`)
+	}))
+	defer server.Close()
+
+	withFormSchemaEnv(t, server.URL, "test-secret")
+
+	if _, err := fetchFormSchema(formID, "test-request-id-456"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRequestID != "test-request-id-456" {
+		t.Errorf("want %s forwarded as %q, got %q", requestid.Header, "test-request-id-456", gotRequestID)
 	}
 }
 
@@ -67,7 +90,7 @@ func TestFetchFormSchema_UpstreamErrorEnvelope(t *testing.T) {
 
 	withFormSchemaEnv(t, server.URL, "test-secret")
 
-	if _, err := fetchFormSchema(formID); err == nil {
+	if _, err := fetchFormSchema(formID, ""); err == nil {
 		t.Fatal("want error when web-backend returns an error envelope, got nil")
 	}
 }
@@ -81,7 +104,7 @@ func TestFetchFormSchema_NonOKStatus(t *testing.T) {
 
 	withFormSchemaEnv(t, server.URL, "test-secret")
 
-	if _, err := fetchFormSchema(formID); err == nil {
+	if _, err := fetchFormSchema(formID, ""); err == nil {
 		t.Fatal("want error on non-200 status, got nil")
 	}
 }
@@ -89,7 +112,7 @@ func TestFetchFormSchema_NonOKStatus(t *testing.T) {
 func TestFetchFormSchema_MissingWebBackendURL(t *testing.T) {
 	withFormSchemaEnv(t, "", "test-secret")
 
-	if _, err := fetchFormSchema(uuid.New()); err == nil {
+	if _, err := fetchFormSchema(uuid.New(), ""); err == nil {
 		t.Fatal("want error when WEB_BACKEND_URL is unset, got nil")
 	}
 }
@@ -97,7 +120,7 @@ func TestFetchFormSchema_MissingWebBackendURL(t *testing.T) {
 func TestFetchFormSchema_MissingServiceKey(t *testing.T) {
 	withFormSchemaEnv(t, "http://example.invalid", "")
 
-	if _, err := fetchFormSchema(uuid.New()); err == nil {
+	if _, err := fetchFormSchema(uuid.New(), ""); err == nil {
 		t.Fatal("want error when KOTLIN_SERVICE_KEY is unset, got nil")
 	}
 }
