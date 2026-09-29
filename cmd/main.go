@@ -39,7 +39,9 @@ func main() {
 	}); err != nil {
 		// Init only errors on a malformed DSN, not a missing one -- worth
 		// surfacing since it means the SDK silently isn't capturing.
-		fmt.Printf("sentry.Init failed: %v\n", err)
+		// slog, not fmt: logging.Init() above makes every line JSON, and a
+		// raw Printf here would be the one plain-text line in the stream.
+		slog.Error("sentry.Init failed", "error", err)
 	}
 	defer sentry.Flush(2 * time.Second)
 
