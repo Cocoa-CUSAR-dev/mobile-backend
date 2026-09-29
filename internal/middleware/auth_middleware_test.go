@@ -28,12 +28,13 @@ func TestMain(m *testing.M) {
 }
 
 // helper: spin up a router with the middleware mounted at /. A small
-// "echo" downstream handler records whether it ran and what userID
+// "echo" downstream handler records whether it ran and what userID/roles
 // the middleware injected into the context. This lets us assert both
-// "did the request get through" and "did the userID flow correctly".
+// "did the request get through" and "did userID/roles flow correctly".
 type echoResult struct {
 	ran    bool
 	userID string
+	roles  []string
 }
 
 func newEchoRouter() (*gin.Engine, *echoResult) {
@@ -45,6 +46,11 @@ func newEchoRouter() (*gin.Engine, *echoResult) {
 		if v, ok := c.Get("userID"); ok {
 			if uid, ok := v.(uuid.UUID); ok {
 				res.userID = uid.String()
+			}
+		}
+		if v, ok := c.Get("roles"); ok {
+			if roles, ok := v.([]string); ok {
+				res.roles = roles
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -382,10 +388,123 @@ func TestJwtAuthMiddleware_ValidTokenLetsRequestThrough(t *testing.T) {
 	}
 }
 
+// --- Roles claim extraction (#7 follow-up: GenerateToken now signs a
+// "roles" claim; this is the middleware's half — read it back out) --------
+
+func TestJwtAuthMiddleware_ValidRolesClaimExtracted(t *testing.T) {
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{
+		"user_id": uid.String(),
+		"roles":   []interface{}{"farmer", "hub_collector"},
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	want := []string{"farmer", "hub_collector"}
+	if len(res.roles) != len(want) {
+		t.Fatalf("roles: want %v, got %v", want, res.roles)
+	}
+	for i, r := range want {
+		if res.roles[i] != r {
+			t.Errorf("roles[%d]: want %q, got %q", i, r, res.roles[i])
+		}
+	}
+}
+
+func TestJwtAuthMiddleware_MissingRolesClaimDefaultsToEmpty(t *testing.T) {
+	// Tokens issued before this change (or by any path that forgets to
+	// set "roles") must not break auth — userID is still valid, the
+	// request should still go through, just with no permissions.
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{
+		"user_id": uid.String(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+		// no "roles" claim at all
+	})
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 even with no roles claim, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if res.roles == nil {
+		t.Error("roles: want non-nil empty slice, got nil")
+	}
+	if len(res.roles) != 0 {
+		t.Errorf("roles: want empty, got %v", res.roles)
+	}
+}
+
+func TestJwtAuthMiddleware_NonArrayRolesClaimDefaultsToEmpty(t *testing.T) {
+	// A malformed "roles" claim (wrong JSON type) must not 401 the
+	// whole token — same fail-open-on-authorization reasoning as the
+	// missing-claim case above.
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{
+		"user_id": uid.String(),
+		"roles":   "farmer", // string, not an array — wrong shape
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if len(res.roles) != 0 {
+		t.Errorf("roles: want empty for malformed claim, got %v", res.roles)
+	}
+}
+
+func TestJwtAuthMiddleware_NonStringRoleEntriesAreSkipped(t *testing.T) {
+	// Mixed-type array: only string entries survive the conversion,
+	// non-string entries are dropped rather than panicking the type
+	// assertion.
+	uid := uuid.New()
+	tok := mintToken(t, jwt.MapClaims{
+		"user_id": uid.String(),
+		"roles":   []interface{}{"farmer", 42, nil, "processor"},
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	r, res := newEchoRouter()
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: testCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	want := []string{"farmer", "processor"}
+	if len(res.roles) != len(want) {
+		t.Fatalf("roles: want %v, got %v", want, res.roles)
+	}
+	for i, r := range want {
+		if res.roles[i] != r {
+			t.Errorf("roles[%d]: want %q, got %q", i, r, res.roles[i])
+		}
+	}
+}
+
 func TestJwtAuthMiddleware_ExtraClaimsAreIgnored(t *testing.T) {
-	// Forward-compat: if the token carries extra claims (e.g. role,
-	// exp_refresh, anything new), the middleware should ignore them
-	// and still pass. Pins the current "extract only user_id" contract.
+	// Forward-compat: if the token carries extra claims the middleware
+	// doesn't know about (note: "role" here is singular — a decoy, not
+	// the "roles" claim the middleware actually reads), they should be
+	// ignored and the request should still pass. Pins that only
+	// "user_id" and "roles" are extracted; everything else is inert.
 	uid := uuid.New()
 	tok := mintToken(t, jwt.MapClaims{
 		"user_id":   uid.String(),
@@ -407,6 +526,11 @@ func TestJwtAuthMiddleware_ExtraClaimsAreIgnored(t *testing.T) {
 	}
 	if res.userID != uid.String() {
 		t.Errorf("userID: want %s, got %s", uid.String(), res.userID)
+	}
+	// No "roles" (plural) claim was set, so it must default to empty —
+	// not nil, and definitely not the decoy singular "role" value.
+	if len(res.roles) != 0 {
+		t.Errorf("roles: want empty, got %v", res.roles)
 	}
 }
 

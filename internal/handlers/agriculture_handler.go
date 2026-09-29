@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"go-server-mobile/internal/models"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -166,7 +167,7 @@ func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 	// ใช้คำสั่ง Clause OnConflict เพื่อป้องกัน Error กรณีมี Role นี้อยู่แล้ว (Idempotent)
 	if err := tx.Table("auth.user_role").Create(&userRoleData).Error; err != nil {
 		tx.Rollback()
-		fmt.Println("ไม่สามารถเพิ่ม Role Farmer ได้:", err)
+		slog.Error("failed to add farmer role", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "เกิดข้อผิดพลาดในการกำหนดสิทธิ์"})
 		return
 	}
@@ -186,7 +187,7 @@ func (h *AgricultureHandler) RegisterFarmerProfile(c *gin.Context) {
 	// overwrite it and log them out right after a successful registration.
 	newToken, err := reissueTokenCookie(c, h.DB, userID)
 	if err != nil {
-		fmt.Println("reissueTokenCookie after RegisterFarmerProfile:", err)
+		slog.Error("reissueTokenCookie failed after RegisterFarmerProfile", "error", err)
 	}
 
 	// 5. Response กลับ -- flat farmer fields (unchanged shape) plus token.
@@ -329,7 +330,7 @@ func (h *AgricultureHandler) RegisterPlot(c *gin.Context) {
 		query := "INSERT INTO \"storage\".geo (uploaded_by, geom, code, source_type, area_sq_m, created_at) VALUES (?, ST_GeomFromText(?, 4326), ?, ?, ?, ?)"
 		if err := tx.Exec(query, userID, wkt, plotID.String(), "plot", req.AreaSqM, time.Now()).Error; err != nil {
 			tx.Rollback()
-			fmt.Println("Geo Error:", err)
+			slog.Error("failed to save plot geometry", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "บันทึกพิกัดแปลงล้มเหลว"})
 			return
 		}

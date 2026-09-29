@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"fmt"
 	"go-server-mobile/internal/models"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -90,7 +90,7 @@ func (h *ProcessingHandler) RegisterProcessor(c *gin.Context) {
 	// string that would overwrite a web client's still-good token.
 	newToken, err := reissueTokenCookie(c, h.DB, userID)
 	if err != nil {
-		fmt.Println("reissueTokenCookie after RegisterProcessor:", err)
+		slog.Error("reissueTokenCookie failed after RegisterProcessor", "error", err)
 	}
 
 	resp := gin.H{"message": "ลงทะเบียน Processor สำเร็จ"}

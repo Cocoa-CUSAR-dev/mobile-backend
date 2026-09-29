@@ -2,7 +2,7 @@ name: CD
 
 on:
   push:
-    branches: '**'
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -19,6 +19,12 @@ jobs:
   test:
     name: Automated tests before deploy
     runs-on: ubuntu-latest
+    # X-6d: render.yaml's autoDeployTrigger: checksPass waits on this
+    # workflow's checks -- gating this job (build-and-push depends on it
+    # via `needs: test`) behind a GitHub Environment means a human has to
+    # approve before either job runs, so Render can't see a passing check
+    # and deploy without that approval first.
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4

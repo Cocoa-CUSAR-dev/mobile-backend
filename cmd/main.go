@@ -1,28 +1,49 @@
 package main
 
 import (
-	"fmt"
 	"go-server-mobile/internal/database"
 	"go-server-mobile/internal/handlers"
+	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
-	"log"
+	"go-server-mobile/internal/requestid"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
 
 func main() {
+	// 0. Structured JSON logging (X-2b) -- do this first so every log line
+	// from here on, including the .env warning below, comes out as JSON.
+	logging.Init()
+
 	// 1. โหลด Environment
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("ไม่พบไฟล์ .env\n")
+	if err := godotenv.Load(); err != nil {
+		slog.Warn(".env file not found, using system environment variables")
 	}
 
-	fmt.Println("JWT_NAME in main:", os.Getenv("JWT_NAME"))
+	// X-2d: error tracking. An empty Dsn disables the SDK entirely (no
+	// error, no panic) -- safe to call unconditionally in local dev/CI
+	// where SENTRY_DSN isn't set.
+	if err := sentry.Init(sentry.ClientOptions{
+		Dsn:              os.Getenv("SENTRY_DSN"),
+		Environment:      os.Getenv("SENTRY_ENVIRONMENT"),
+		TracesSampleRate: 0.0,
+	}); err != nil {
+		// Init only errors on a malformed DSN, not a missing one -- worth
+		// surfacing since it means the SDK silently isn't capturing.
+		// slog, not fmt: logging.Init() above makes every line JSON, and a
+		// raw Printf here would be the one plain-text line in the stream.
+		slog.Error("sentry.Init failed", "error", err)
+	}
+	defer sentry.Flush(2 * time.Second)
 
 	// 2. เชื่อมต่อ Database
 	db := database.InitDB()
@@ -38,7 +59,20 @@ func main() {
 	processingHandler := &handlers.ProcessingHandler{DB: db}
 
 	// 4. Setup Router
-	r := gin.Default()
+	// gin.New() instead of gin.Default() -- Default() wires up gin's own
+	// plain-text access logger, which we replace with logging.GinMiddleware()
+	// so request logs are JSON too, same as everything else (X-2b).
+	r := gin.New()
+	// X-2e: assign/accept a correlation ID before anything else runs, so
+	// the logger below and every handler can see it.
+	r.Use(requestid.Middleware())
+	r.Use(logging.GinMiddleware())
+	r.Use(gin.Recovery())
+	// X-2d: reports panics recovered by gin.Recovery() above to Sentry --
+	// registered after it (so it sees the panic before Recovery's own defer
+	// does, same relative order as the documented gin.Default()+sentrygin
+	// pattern) -- a no-op when the SDK is disabled.
+	r.Use(sentrygin.New(sentrygin.Options{}))
 
 	// LIFF test kit — ดูรายละเอียดที่ static/liff-test/README.md
 	// r.StaticFile("/liff-test", "./static/liff-test/index.html")
@@ -57,9 +91,15 @@ func main() {
 	}
 	if len(corsOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
-			AllowOrigins:     corsOrigins,
-			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-			AllowHeaders:     []string{"Content-Type", "Authorization"},
+			AllowOrigins: corsOrigins,
+			AllowMethods: []string{"GET", "POST", "PUT", "DELETE"},
+			// X-Request-Id has to be listed in both: without AllowHeaders the
+			// browser's preflight rejects the whole request as soon as a web
+			// caller starts sending one (the first hop requestid documents),
+			// and without ExposeHeaders the echoed value is invisible to JS,
+			// so the caller cannot log the ID it was given.
+			AllowHeaders:     []string{"Content-Type", "Authorization", requestid.Header},
+			ExposeHeaders:    []string{requestid.Header},
 			AllowCredentials: true,
 		}))
 	}
@@ -132,6 +172,7 @@ func main() {
 		protected.GET("/tasks", formHandler.GetTasks)
 		protected.POST("/tasks", formHandler.SubmitTask)
 		protected.GET("/tasks/:taskId", formHandler.GetTaskResponse)
+		protected.GET("/tasks/:taskId/responses", formHandler.GetTaskResponses)
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}
@@ -156,6 +197,7 @@ func main() {
 		port = "8080"
 	}
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("server failed to start: %v", err)
+		slog.Error("server failed to start", "error", err)
+		os.Exit(1)
 	}
 }
