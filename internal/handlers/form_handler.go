@@ -144,14 +144,29 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 	userID := val.(uuid.UUID)
 
 	date := c.Query("date")
+	page, size := paginationParams(c)
 
+	tasks, err := queryTasksForUser(h.DB, userID, date, page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงข้อมูลงานได้"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tasks)
+}
+
+// queryTasksForUser is GetTasks' query, extracted so GetTasksForUser (the
+// service-key twin for trusted first-party callers, e.g. the chatbot's LIFF
+// to-do list -- docs-and-plan#176) can return the exact same shape/status
+// semantics instead of a second, drifting copy of this SQL.
+func queryTasksForUser(
+	db *gorm.DB, userID uuid.UUID, date string, page, size int,
+) ([]map[string]interface{}, error) {
 	var tasks []map[string]interface{}
 
 	// GO-6: this bypasses GORM's query builder (raw SQL + Scan), so the
 	// shared Paginate scope doesn't apply -- LIMIT/OFFSET appended directly
 	// instead, task_id added as an ORDER BY tiebreaker for stable paging.
-	page, size := paginationParams(c)
-
 	query := `
 		SELECT
 			t.task_id,
@@ -218,7 +233,40 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 		LIMIT ? OFFSET ?
 	`
 
-	if err := h.DB.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error; err != nil {
+	err := db.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error
+	return tasks, err
+}
+
+// GetTasksForUser — GET /service/tasks — the service-key twin of GetTasks,
+// for trusted first-party callers with no farmer session of their own to
+// derive userID from (currently: the chatbot's LIFF to-do list,
+// docs-and-plan#176). Same shape/status semantics as GetTasks, including
+// COMPLETED tasks -- callers that only want pending ones (the chatbot) filter
+// status themselves, same division of responsibility as GetLastAnswer:
+// this stays a generic "list tasks for a user_id" building block rather than
+// hard-coding one caller's notion of "pending."
+//
+// Read-only, so (unlike SubmitTaskForUser) there's no chat.conversation
+// legitimacy check on the claimed user_id here -- worst case a caller that
+// already knows the service key reads another farmer's task list, not
+// writes fabricated data. Same trust boundary GetLastAnswer already accepts.
+func (h *FormHandler) GetTasksForUser(c *gin.Context) {
+	userIDParam := c.Query("user_id")
+	if userIDParam == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุ user_id"})
+		return
+	}
+	userID, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id ไม่ถูกต้อง"})
+		return
+	}
+
+	date := c.Query("date")
+	page, size := paginationParams(c)
+
+	tasks, err := queryTasksForUser(h.DB, userID, date, page, size)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงข้อมูลงานได้"})
 		return
 	}
