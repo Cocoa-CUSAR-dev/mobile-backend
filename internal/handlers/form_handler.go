@@ -159,6 +159,11 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 // service-key twin for trusted first-party callers, e.g. the chatbot's LIFF
 // to-do list -- docs-and-plan#176) can return the exact same shape/status
 // semantics instead of a second, drifting copy of this SQL.
+//
+// task_form_id (tf.form_id) is new here -- GetTasks itself never needed it
+// (the Flutter app has its own GET /tasks/:taskId/form lookup), but the LIFF
+// screen's one-tap "open" does, to start/resume a conversation without an
+// extra round trip. Purely additive to GetTasks' own JSON response.
 func queryTasksForUser(
 	db *gorm.DB, userID uuid.UUID, date string, page, size int,
 ) ([]map[string]interface{}, error) {
@@ -174,6 +179,7 @@ func queryTasksForUser(
 			t.description,
 			t.open_at,
 			t.close_at,
+			tf.form_id AS task_form_id,
 			tf.handler,
 			-- Sent so the app can tell a second queued row for the same task
 			-- apart from a conflicting overwrite when it syncs offline work.

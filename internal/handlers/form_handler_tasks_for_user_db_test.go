@@ -23,9 +23,13 @@ import (
 // Reuses openLastAnswerTestDB/seedUserAccount from the sibling DB tests in
 // this package -- same RUN_DB_TESTS gate.
 
+// seedTaskFormForUserTest returns (taskID, formID) -- formID is
+// form.task_form's own generated PK, asserted against the response's
+// task_form_id field (added for docs-and-plan#176's one-tap "open", which
+// needs it to start/resume a conversation without an extra round trip).
 func seedTaskFormForUserTest(
 	t *testing.T, db *gorm.DB, handler string, closeAt time.Time, isMultipleSubmit bool,
-) uuid.UUID {
+) (uuid.UUID, uuid.UUID) {
 	t.Helper()
 	taskID := uuid.New()
 	if err := db.Exec(
@@ -34,13 +38,17 @@ func seedTaskFormForUserTest(
 	).Error; err != nil {
 		t.Fatalf("seed form.task: %v", err)
 	}
-	if err := db.Exec(
-		"INSERT INTO form.task_form (task_id, handler, is_multiple_submit) VALUES (?, ?, ?)",
+	var row struct {
+		FormID uuid.UUID `gorm:"column:form_id"`
+	}
+	if err := db.Raw(
+		"INSERT INTO form.task_form (task_id, handler, is_multiple_submit) VALUES (?, ?, ?) "+
+			"RETURNING form_id",
 		taskID, handler, isMultipleSubmit,
-	).Error; err != nil {
+	).Scan(&row).Error; err != nil {
 		t.Fatalf("seed form.task_form: %v", err)
 	}
-	return taskID
+	return taskID, row.FormID
 }
 
 func taskStatuses(t *testing.T, w *httptest.ResponseRecorder) map[string]string {
@@ -92,17 +100,17 @@ func TestGetTasksForUser_StatusMatchesEachTaskShape(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 
-	notStartedID := seedTaskFormForUserTest(t, db, "farm_activity", now.Add(24*time.Hour), false)
+	notStartedID, notStartedFormID := seedTaskFormForUserTest(t, db, "farm_activity", now.Add(24*time.Hour), false)
 
-	completedID := seedTaskFormForUserTest(t, db, "harvest", now.Add(24*time.Hour), false)
+	completedID, _ := seedTaskFormForUserTest(t, db, "harvest", now.Add(24*time.Hour), false)
 	seedResponse(t, db, user.UserID, completedID, "COMPLETED", now.Add(-1*time.Hour), map[string]interface{}{"ok": true})
 
-	overdueID := seedTaskFormForUserTest(t, db, "processing_record", now.Add(-24*time.Hour), false)
+	overdueID, _ := seedTaskFormForUserTest(t, db, "processing_record", now.Add(-24*time.Hour), false)
 
 	// Multi-submit with an existing response: must stay IN_PROGRESS, never
 	// COMPLETED -- the whole point of #176 listing it as still-pending (a
 	// farmer files several grade rows against one harvest).
-	multiSubmitID := seedTaskFormForUserTest(t, db, "harvest_grade_detail", now.Add(24*time.Hour), true)
+	multiSubmitID, _ := seedTaskFormForUserTest(t, db, "harvest_grade_detail", now.Add(24*time.Hour), true)
 	seedResponse(t, db, user.UserID, multiSubmitID, "COMPLETED", now.Add(-1*time.Hour), map[string]interface{}{"grade": "A"})
 
 	h := &FormHandler{DB: db}
@@ -133,5 +141,19 @@ func TestGetTasksForUser_StatusMatchesEachTaskShape(t *testing.T) {
 		if got != want {
 			t.Errorf("task %s: want status %s, got %s", taskID, want, got)
 		}
+	}
+
+	var tasks []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &tasks); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var gotFormID string
+	for _, task := range tasks {
+		if task["task_id"] == notStartedID.String() {
+			gotFormID, _ = task["task_form_id"].(string)
+		}
+	}
+	if gotFormID != notStartedFormID.String() {
+		t.Errorf("task_form_id: want %s, got %s", notStartedFormID, gotFormID)
 	}
 }
