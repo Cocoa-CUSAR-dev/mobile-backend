@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"go-server-mobile/internal/models"
+	"go-server-mobile/internal/storage"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,6 +16,9 @@ import (
 
 type AgricultureHandler struct {
 	DB *gorm.DB
+	// Nil when R2 isn't configured -- uploads then answer 503 and farms are
+	// listed without image_url.
+	ImageStore storage.ObjectStore
 }
 
 // Request struct สำหรับรับค่าจาก JSON ตาม format ที่คุณให้มา
@@ -368,6 +372,7 @@ func (h *AgricultureHandler) GetMyFarms(c *gin.Context) {
 		return
 	}
 
+	h.attachFarmImageURLs(c.Request.Context(), farms)
 	c.JSON(http.StatusOK, farms)
 }
 

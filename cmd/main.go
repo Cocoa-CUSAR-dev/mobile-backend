@@ -6,6 +6,7 @@ import (
 	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
 	"go-server-mobile/internal/requestid"
+	"go-server-mobile/internal/storage"
 	"log/slog"
 	"net/http"
 	"os"
@@ -51,6 +52,16 @@ func main() {
 	// 3. Initialize Handlers
 	authHandler := &handlers.AuthHandler{DB: db}
 	agricultureHandler := &handlers.AgricultureHandler{DB: db}
+	if cfg, ok := storage.R2ConfigFromEnv(); ok {
+		store, err := storage.NewR2(cfg)
+		if err != nil {
+			slog.Error("R2 client init failed, farm image upload disabled", "error", err)
+		} else {
+			agricultureHandler.ImageStore = store
+		}
+	} else {
+		slog.Warn("R2_* env vars not set, farm image upload disabled")
+	}
 	refHandler := &handlers.RefHandler{DB: db}
 	formHandler := &handlers.FormHandler{DB: db}
 
@@ -150,6 +161,7 @@ func main() {
 		protected.POST("/farms", middleware.RequireRole("farmer"), agricultureHandler.RegisterFarm)
 		protected.POST("/plots", middleware.RequireRole("farmer"), agricultureHandler.RegisterPlot)
 		protected.GET("/farms", middleware.RequireRole("farmer"), agricultureHandler.GetMyFarms)
+		protected.POST("/farms/:farm_id/image", middleware.RequireRole("farmer"), agricultureHandler.UploadFarmImage)
 		protected.GET("/plots", middleware.RequireRole("farmer"), agricultureHandler.GetMyPlots)
 
 		// --- 2. หน่วยรวบรวม (Collection) ---
