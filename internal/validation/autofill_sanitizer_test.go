@@ -116,3 +116,56 @@ func assertAnswerEqual(t *testing.T, got, want map[string]interface{}) {
 		}
 	}
 }
+
+func TestSanitizeAutofillAnswer_GeodataFieldIsDropped(t *testing.T) {
+	// "ตำแหน่งปัจจุบัน" means where the farmer is NOW -- yesterday's
+	// coordinates offered as today's are wrong data that looks plausible.
+	answer := map[string]interface{}{
+		"geo_location": "13.7563,100.5018",
+		"note":         "ฝนตก",
+	}
+	questions := []Question{
+		{FieldName: "geo_location", InputType: "GEODATA"},
+		{FieldName: "note", InputType: "VARCHAR"},
+	}
+
+	got := SanitizeAutofillAnswer(answer, questions)
+
+	assertAnswerEqual(t, got, map[string]interface{}{"note": "ฝนตก"})
+}
+
+func TestSanitizeAutofillAnswer_GeodataInputTypeIsCaseInsensitive(t *testing.T) {
+	// Same strings.ToUpper treatment OPTION/BOOLEAN already get.
+	answer := map[string]interface{}{"geo_location": "13.7,100.5"}
+	questions := []Question{{FieldName: "geo_location", InputType: "geodata"}}
+
+	got := SanitizeAutofillAnswer(answer, questions)
+
+	assertAnswerEqual(t, got, map[string]interface{}{})
+}
+
+func TestSanitizeAutofillAnswer_UploadFieldIsDroppedEvenThoughItIsVarchar(t *testing.T) {
+	// Last time's photo is not evidence of today's work. Its input type is
+	// VARCHAR, so this has to go by field name.
+	answer := map[string]interface{}{
+		"upload": "https://storage.example/old-photo.jpg",
+		"note":   "ใส่ปุ๋ย",
+	}
+	questions := []Question{
+		{FieldName: "upload", InputType: "VARCHAR"},
+		{FieldName: "note", InputType: "VARCHAR"},
+	}
+
+	got := SanitizeAutofillAnswer(answer, questions)
+
+	assertAnswerEqual(t, got, map[string]interface{}{"note": "ใส่ปุ๋ย"})
+}
+
+func TestSanitizeAutofillAnswer_UploadIsDroppedEvenWhenNotOnTheCurrentForm(t *testing.T) {
+	// Rule 4 doesn't depend on the form at all, unlike the GEODATA rule.
+	answer := map[string]interface{}{"upload": "https://storage.example/old.jpg"}
+
+	got := SanitizeAutofillAnswer(answer, nil)
+
+	assertAnswerEqual(t, got, map[string]interface{}{})
+}
