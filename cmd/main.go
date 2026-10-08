@@ -186,6 +186,8 @@ func main() {
 		protected.GET("/tasks/:taskId", formHandler.GetTaskResponse)
 		protected.GET("/tasks/:taskId/responses", formHandler.GetTaskResponses)
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
+		// US2-5: same "use last time's answers" offer the chatbot gives -- see GetTaskAutofill.
+		protected.GET("/tasks/:taskId/autofill", formHandler.GetTaskAutofill)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}
 

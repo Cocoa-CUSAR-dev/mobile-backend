@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -462,6 +463,47 @@ func (h *FormHandler) GetLastAnswer(c *gin.Context) {
 		return
 	}
 
+	last, err := h.findLastCompletedAnswer(userID, handler)
+	if errors.Is(err, errLastAnswerCorrupt) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเดิมเสียหาย"})
+		return
+	}
+	if err != nil || last == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบประวัติการส่งงานประเภทนี้มาก่อน"})
+		return
+	}
+
+	c.JSON(http.StatusOK, LastAnswerResponse{
+		Handler:     handler,
+		SubmittedAt: last.SubmittedAt,
+		Answer:      last.Answer,
+	})
+}
+
+// errLastAnswerCorrupt: a row was found but its answer column isn't valid
+// JSON. Kept distinct from "nothing found" so GetLastAnswer can keep
+// answering 500 for it, exactly as it did before this was extracted.
+var errLastAnswerCorrupt = errors.New("last completed answer is not valid JSON")
+
+type lastCompletedAnswer struct {
+	SubmittedAt time.Time
+	Answer      map[string]interface{}
+}
+
+// findLastCompletedAnswer is THE definition of "the farmer's last answer of
+// this kind" -- the most recent COMPLETED form.response for (user, handler),
+// across every task of that handler and every channel (app submissions are
+// written COMPLETED by submitAnswerForUser, same as the chatbot's).
+//
+// One function, called by both GetLastAnswer (the chatbot's
+// /service/tasks/last-answer) and GetTaskAutofill (the app's
+// /tasks/:taskId/autofill), on purpose: US2-5 promises the two channels
+// offer the SAME data, and a second copy of this query is exactly how they
+// would quietly stop doing so -- one side adding a filter the other never
+// got. Returns (nil, nil) when there is simply no such submission yet.
+func (h *FormHandler) findLastCompletedAnswer(
+	userID uuid.UUID, handler string,
+) (*lastCompletedAnswer, error) {
 	// Raw SQL, not the GORM query builder -- same shape GetTasks already
 	// uses for the identical form.task_form join, proven reliable here.
 	var result struct {
@@ -476,25 +518,21 @@ func (h *FormHandler) GetLastAnswer(c *gin.Context) {
 		ORDER BY r.submitted_at DESC
 		LIMIT 1
 	`
+	if err := h.DB.Raw(query, userID, handler).Scan(&result).Error; err != nil {
+		return nil, err
+	}
 	// GORM's Scan (unlike First) never sets .Error just because zero rows
 	// matched -- it silently leaves the struct at its zero value instead.
 	// Answer == nil is the actual "nothing found" signal here, not err.
-	if err := h.DB.Raw(query, userID, handler).Scan(&result).Error; err != nil || result.Answer == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบประวัติการส่งงานประเภทนี้มาก่อน"})
-		return
+	if result.Answer == nil {
+		return nil, nil
 	}
 
 	var answer map[string]interface{}
 	if err := json.Unmarshal(result.Answer, &answer); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเดิมเสียหาย"})
-		return
+		return nil, errLastAnswerCorrupt
 	}
-
-	c.JSON(http.StatusOK, LastAnswerResponse{
-		Handler:     handler,
-		SubmittedAt: result.SubmittedAt,
-		Answer:      answer,
-	})
+	return &lastCompletedAnswer{SubmittedAt: result.SubmittedAt, Answer: answer}, nil
 }
 
 // validateSubmission is the actual gate #54 wants: fetch formID's schema
