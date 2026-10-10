@@ -21,6 +21,15 @@ import (
 )
 
 func main() {
+	// Every timestamp this service writes is UTC, whatever zone the host is
+	// in (docs-and-plan#224). The columns are `timestamp without time zone`
+	// and pgx stores a time.Time's wall clock as-is, so `time.Now()` used to
+	// write Bangkok time from a dev laptop and UTC from Render -- one column,
+	// two meanings, and every client off by 7 hours for half the rows. The
+	// columns' own now() defaults are UTC (Neon's session zone), so this
+	// makes Go agree with them. Set before anything reads the clock.
+	time.Local = time.UTC
+
 	// 0. Structured JSON logging (X-2b) -- do this first so every log line
 	// from here on, including the .env warning below, comes out as JSON.
 	logging.Init()
