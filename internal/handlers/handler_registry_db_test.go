@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS agriculture.plot (
 CREATE TABLE IF NOT EXISTS agriculture.farm_activity (
 	farm_activity_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	farm_id uuid NOT NULL,
-	plot_id uuid,
+	plot_id uuid REFERENCES agriculture.plot (plot_id),
 	farm_activity_type_id uuid NOT NULL,
 	description character varying
 );
@@ -221,6 +221,31 @@ func TestRegistryDB_NotNullAtInsertBecomesAFarmerReadableFieldError(t *testing.T
 	fe, ok := insertViolationError(insertErr, map[string]string{})
 	if !ok || fe.FieldName != "farm_activity_type_id" {
 		t.Fatalf("want a farm_activity_type_id field error, got %+v ok=%v (raw: %v)", fe, ok, insertErr)
+	}
+}
+
+func TestRegistryDB_ForeignKeyAtInsertIsAFieldErrorThroughTheAppsTranslatedConnection(t *testing.T) {
+	// openIntegrationTestDB opens gorm with TranslateError, like the app
+	// does, so this is the FK error shape production really sees.
+	db := openRegistryTestDB(t)
+	reg, err := loadHandlerRegistryFromDB(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, _ := reg.table("farm_activity")
+
+	insertErr := db.Transaction(func(tx *gorm.DB) error {
+		return dissectAnswer(tx, "farm_activity", table, map[string]interface{}{
+			"farm_id":               uuid.New().String(),
+			"farm_activity_type_id": uuid.New().String(),
+			"plot_id":               uuid.New().String(), // a plot that doesn't exist
+		})
+	})
+	if insertErr == nil {
+		t.Fatal("want the FK violation from the real INSERT")
+	}
+	if _, ok := insertViolationError(insertErr, nil); !ok {
+		t.Fatalf("an FK violation must be a 400 field error, not a 500 (raw: %v)", insertErr)
 	}
 }
 

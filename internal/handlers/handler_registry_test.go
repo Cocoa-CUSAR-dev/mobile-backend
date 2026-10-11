@@ -155,6 +155,16 @@ func TestInsertViolationError_ForeignKeyReadsTheColumnFromTheDetail(t *testing.T
 	}
 }
 
+func TestInsertViolationError_TranslatedForeignKeyIsStillAFieldError(t *testing.T) {
+	// What the real app connection produces (TranslateError: true): the
+	// Postgres detail is gone, so no column -- but still a 400, not a 500.
+	fe, ok := insertViolationError(fmt.Errorf("insert: %w", gorm.ErrForeignKeyViolated), nil)
+
+	if !ok || !strings.Contains(fe.Message, "ไม่มีอยู่ในระบบ") {
+		t.Fatalf("got %+v ok=%v", fe, ok)
+	}
+}
+
 func TestInsertViolationError_AnythingElseStaysAServerError(t *testing.T) {
 	if _, ok := insertViolationError(&pgconn.PgError{Code: "23505"}, nil); ok {
 		t.Fatal("a unique violation is not a farmer's mistake -- must stay a 500")

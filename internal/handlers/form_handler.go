@@ -562,6 +562,19 @@ func validateSubmission(
 // time; this covers forms built before them and anything they can't see.
 // Returns false for any other error, which stays a 500.
 func insertViolationError(err error, labels map[string]string) (validation.FieldError, bool) {
+	// The app's DB connection runs with gorm's TranslateError (see
+	// internal/database/postgres.go), which turns an FK violation into
+	// gorm.ErrForeignKeyViolated and drops the Postgres detail -- so which
+	// column it was is gone by the time it gets here. Still a farmer's
+	// mistake (a choice that's since been deleted), so still a 400, just
+	// without naming the field. NOT NULL (23502) isn't translated and keeps
+	// its column below.
+	if errors.Is(err, gorm.ErrForeignKeyViolated) {
+		return validation.FieldError{
+			FieldName: "answer",
+			Message:   "มีค่าที่เลือกบางข้อไม่มีอยู่ในระบบแล้ว กรุณาเลือกใหม่",
+		}, true
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
 		return validation.FieldError{}, false
