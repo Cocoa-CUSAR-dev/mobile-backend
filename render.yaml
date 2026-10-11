@@ -33,3 +33,11 @@ services:
         value: 3600
       - key: JWT_REFRESH_TOKEN_EXPIRATION
         value: 86400
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false

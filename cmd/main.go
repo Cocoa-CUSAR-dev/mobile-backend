@@ -6,6 +6,7 @@ import (
 	"go-server-mobile/internal/logging"
 	"go-server-mobile/internal/middleware"
 	"go-server-mobile/internal/requestid"
+	"go-server-mobile/internal/storage"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,15 @@ import (
 )
 
 func main() {
+	// Every timestamp this service writes is UTC, whatever zone the host is
+	// in (docs-and-plan#224). The columns are `timestamp without time zone`
+	// and pgx stores a time.Time's wall clock as-is, so `time.Now()` used to
+	// write Bangkok time from a dev laptop and UTC from Render -- one column,
+	// two meanings, and every client off by 7 hours for half the rows. The
+	// columns' own now() defaults are UTC (Neon's session zone), so this
+	// makes Go agree with them. Set before anything reads the clock.
+	time.Local = time.UTC
+
 	// 0. Structured JSON logging (X-2b) -- do this first so every log line
 	// from here on, including the .env warning below, comes out as JSON.
 	logging.Init()
@@ -51,6 +61,16 @@ func main() {
 	// 3. Initialize Handlers
 	authHandler := &handlers.AuthHandler{DB: db}
 	agricultureHandler := &handlers.AgricultureHandler{DB: db}
+	if cfg, ok := storage.R2ConfigFromEnv(); ok {
+		store, err := storage.NewR2(cfg)
+		if err != nil {
+			slog.Error("R2 client init failed, farm image upload disabled", "error", err)
+		} else {
+			agricultureHandler.ImageStore = store
+		}
+	} else {
+		slog.Warn("R2_* env vars not set, farm image upload disabled")
+	}
 	refHandler := &handlers.RefHandler{DB: db}
 	formHandler := &handlers.FormHandler{DB: db}
 
@@ -150,6 +170,7 @@ func main() {
 		protected.POST("/farms", middleware.RequireRole("farmer"), agricultureHandler.RegisterFarm)
 		protected.POST("/plots", middleware.RequireRole("farmer"), agricultureHandler.RegisterPlot)
 		protected.GET("/farms", middleware.RequireRole("farmer"), agricultureHandler.GetMyFarms)
+		protected.POST("/farms/:farm_id/image", middleware.RequireRole("farmer"), agricultureHandler.UploadFarmImage)
 		protected.GET("/plots", middleware.RequireRole("farmer"), agricultureHandler.GetMyPlots)
 
 		// --- 2. หน่วยรวบรวม (Collection) ---
@@ -174,6 +195,8 @@ func main() {
 		protected.GET("/tasks/:taskId", formHandler.GetTaskResponse)
 		protected.GET("/tasks/:taskId/responses", formHandler.GetTaskResponses)
 		protected.GET("/tasks/:taskId/form", formHandler.GetTaskForm)
+		// US2-5: same "use last time's answers" offer the chatbot gives -- see GetTaskAutofill.
+		protected.GET("/tasks/:taskId/autofill", formHandler.GetTaskAutofill)
 		protected.PUT("/tasks", formHandler.UpdateTaskResponse)
 	}
 
@@ -184,6 +207,7 @@ func main() {
 	service.Use(middleware.ServiceAuthMiddleware())
 	{
 		service.POST("/tasks", formHandler.SubmitTaskForUser)
+		service.GET("/tasks", formHandler.GetTasksForUser)
 		service.GET("/tasks/last-answer", formHandler.GetLastAnswer)
 		service.POST("/autofill/sanitize", handlers.SanitizeAutofill)
 	}

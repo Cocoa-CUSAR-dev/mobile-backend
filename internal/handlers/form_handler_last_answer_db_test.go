@@ -33,11 +33,23 @@ CREATE TABLE IF NOT EXISTS form.task (
 	close_at timestamp without time zone DEFAULT now() + interval '1 day'
 );
 
+-- Additive, idempotent: GetLastAnswer's query never selects t.description,
+-- so this test schema never had it until queryTasksForUser's DB tests
+-- (form_handler_tasks_for_user_db_test.go) became the first thing to
+-- actually exercise GetTasks' real query against a real Postgres and hit
+-- "column t.description does not exist".
+ALTER TABLE form.task ADD COLUMN IF NOT EXISTS description character varying DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS form.task_form (
 	form_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	task_id uuid NOT NULL REFERENCES form.task(task_id),
 	handler character varying NOT NULL
 );
+
+-- Additive, idempotent: form.task_form predates is_multiple_submit in this
+-- test schema (GetLastAnswer's query never needed it), but GetTasksForUser's
+-- status computation (queryTasksForUser) does -- see form_handler_tasks_for_user_db_test.go.
+ALTER TABLE form.task_form ADD COLUMN IF NOT EXISTS is_multiple_submit boolean DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS form.response (
 	response_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -28,6 +28,14 @@ var staleParentFields = map[string]bool{
 	"batch_id":         true,
 }
 
+// uploadFieldName is the form field a photo/file attachment is stored under
+// (Kotlin's handler-field list exposes it as a plain VARCHAR named "upload",
+// which is why the chatbot already refuses to ask it). Last time's photo is
+// evidence of last time, not of today -- offering it would let a farmer
+// submit an old picture as proof of new work without ever choosing to.
+// Dropped by name, not by input type, because its input type is VARCHAR.
+const uploadFieldName = "upload"
+
 // booleanChoices -- Kotlin never sends `choices` for a BOOLEAN question
 // (its own filter is inputType == OPTION only, see answer_validator.go's
 // ValidateAnswer), so these are synthesized here. Same two ids the
@@ -36,32 +44,45 @@ var staleParentFields = map[string]bool{
 var booleanChoices = []Choice{{ID: "true", Name: "ใช่"}, {ID: "false", Name: "ไม่"}}
 
 // SanitizeAutofillAnswer strips a raw last-submission answer down to what's
-// actually safe to offer a farmer as a prefill on the CURRENT form. Three
-// rules:
+// actually safe to offer a farmer as a prefill on the CURRENT form. Both
+// channels run exactly this function -- the chatbot through
+// POST /service/autofill/sanitize, the mobile app through
+// GET /tasks/:taskId/autofill -- so a rule added here reaches both at once
+// (US2-5: "offers the same data and behaves the same way in both"). Rules:
 //
 //  1. task_id and the 3 stale parent-id fields are dropped outright, always.
 //  2. An OPTION/BOOLEAN field whose stored value doesn't match any of the
 //     CURRENT form's real choices for that field is dropped -- a
 //     farm/fertilizer/etc. that's since been deleted or renamed shouldn't
 //     silently offer a value that no longer resolves to anything real.
-//  3. Every other field (free text, or a still-resolving OPTION value)
+//  3. A GEODATA field is dropped: those questions mean "where are you NOW"
+//     (ตำแหน่งปัจจุบัน), and yesterday's coordinates presented as today's
+//     are wrong data that looks perfectly plausible.
+//  4. The "upload" field is dropped, always (see uploadFieldName).
+//  5. Every other field (free text, or a still-resolving OPTION value)
 //     passes through unchanged.
 func SanitizeAutofillAnswer(
 	answer map[string]interface{}, questions []Question,
 ) map[string]interface{} {
 	choicesByField := map[string][]Choice{}
+	geodataFields := map[string]bool{}
 	for _, q := range questions {
 		switch strings.ToUpper(q.InputType) {
 		case "OPTION":
 			choicesByField[q.FieldName] = q.Choices
 		case "BOOLEAN":
 			choicesByField[q.FieldName] = booleanChoices
+		case "GEODATA":
+			geodataFields[q.FieldName] = true
 		}
 	}
 
 	sanitized := map[string]interface{}{}
 	for field, value := range answer {
 		if nonAnswerFields[field] || staleParentFields[field] {
+			continue
+		}
+		if geodataFields[field] || field == uploadFieldName {
 			continue
 		}
 		if choices, isConstrained := choicesByField[field]; isConstrained && !choiceExists(choices, value) {

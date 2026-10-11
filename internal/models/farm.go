@@ -25,6 +25,9 @@ type Farm struct {
 	CreatedAt     time.Time  `gorm:"column:created_at;default:now();not null" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"column:updated_at;default:now();not null" json:"updated_at"`
 	Plots         []Plot     `gorm:"foreignKey:FarmID;references:FarmID" json:"plots"`
+	// Not a column: a short-lived presigned URL for the farm's latest photo
+	// in storage.file, filled in by the handler after the query.
+	ImageURL *string `gorm:"-" json:"image_url"`
 }
 
 func (Farm) TableName() string {

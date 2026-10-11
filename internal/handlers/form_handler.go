@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -144,14 +145,34 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 	userID := val.(uuid.UUID)
 
 	date := c.Query("date")
+	page, size := paginationParams(c)
 
+	tasks, err := queryTasksForUser(h.DB, userID, date, page, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงข้อมูลงานได้"})
+		return
+	}
+
+	c.JSON(http.StatusOK, tasks)
+}
+
+// queryTasksForUser is GetTasks' query, extracted so GetTasksForUser (the
+// service-key twin for trusted first-party callers, e.g. the chatbot's LIFF
+// to-do list -- docs-and-plan#176) can return the exact same shape/status
+// semantics instead of a second, drifting copy of this SQL.
+//
+// task_form_id (tf.form_id) is new here -- GetTasks itself never needed it
+// (the Flutter app has its own GET /tasks/:taskId/form lookup), but the LIFF
+// screen's one-tap "open" does, to start/resume a conversation without an
+// extra round trip. Purely additive to GetTasks' own JSON response.
+func queryTasksForUser(
+	db *gorm.DB, userID uuid.UUID, date string, page, size int,
+) ([]map[string]interface{}, error) {
 	var tasks []map[string]interface{}
 
 	// GO-6: this bypasses GORM's query builder (raw SQL + Scan), so the
 	// shared Paginate scope doesn't apply -- LIMIT/OFFSET appended directly
 	// instead, task_id added as an ORDER BY tiebreaker for stable paging.
-	page, size := paginationParams(c)
-
 	query := `
 		SELECT
 			t.task_id,
@@ -159,6 +180,7 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 			t.description,
 			t.open_at,
 			t.close_at,
+			tf.form_id AS task_form_id,
 			tf.handler,
 			-- Sent so the app can tell a second queued row for the same task
 			-- apart from a conflicting overwrite when it syncs offline work.
@@ -218,7 +240,40 @@ func (h *FormHandler) GetTasks(c *gin.Context) {
 		LIMIT ? OFFSET ?
 	`
 
-	if err := h.DB.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error; err != nil {
+	err := db.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error
+	return tasks, err
+}
+
+// GetTasksForUser — GET /service/tasks — the service-key twin of GetTasks,
+// for trusted first-party callers with no farmer session of their own to
+// derive userID from (currently: the chatbot's LIFF to-do list,
+// docs-and-plan#176). Same shape/status semantics as GetTasks, including
+// COMPLETED tasks -- callers that only want pending ones (the chatbot) filter
+// status themselves, same division of responsibility as GetLastAnswer:
+// this stays a generic "list tasks for a user_id" building block rather than
+// hard-coding one caller's notion of "pending."
+//
+// Read-only, so (unlike SubmitTaskForUser) there's no chat.conversation
+// legitimacy check on the claimed user_id here -- worst case a caller that
+// already knows the service key reads another farmer's task list, not
+// writes fabricated data. Same trust boundary GetLastAnswer already accepts.
+func (h *FormHandler) GetTasksForUser(c *gin.Context) {
+	userIDParam := c.Query("user_id")
+	if userIDParam == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุ user_id"})
+		return
+	}
+	userID, err := uuid.Parse(userIDParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id ไม่ถูกต้อง"})
+		return
+	}
+
+	date := c.Query("date")
+	page, size := paginationParams(c)
+
+	tasks, err := queryTasksForUser(h.DB, userID, date, page, size)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถดึงข้อมูลงานได้"})
 		return
 	}
@@ -408,6 +463,47 @@ func (h *FormHandler) GetLastAnswer(c *gin.Context) {
 		return
 	}
 
+	last, err := h.findLastCompletedAnswer(userID, handler)
+	if errors.Is(err, errLastAnswerCorrupt) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเดิมเสียหาย"})
+		return
+	}
+	if err != nil || last == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบประวัติการส่งงานประเภทนี้มาก่อน"})
+		return
+	}
+
+	c.JSON(http.StatusOK, LastAnswerResponse{
+		Handler:     handler,
+		SubmittedAt: last.SubmittedAt,
+		Answer:      last.Answer,
+	})
+}
+
+// errLastAnswerCorrupt: a row was found but its answer column isn't valid
+// JSON. Kept distinct from "nothing found" so GetLastAnswer can keep
+// answering 500 for it, exactly as it did before this was extracted.
+var errLastAnswerCorrupt = errors.New("last completed answer is not valid JSON")
+
+type lastCompletedAnswer struct {
+	SubmittedAt time.Time
+	Answer      map[string]interface{}
+}
+
+// findLastCompletedAnswer is THE definition of "the farmer's last answer of
+// this kind" -- the most recent COMPLETED form.response for (user, handler),
+// across every task of that handler and every channel (app submissions are
+// written COMPLETED by submitAnswerForUser, same as the chatbot's).
+//
+// One function, called by both GetLastAnswer (the chatbot's
+// /service/tasks/last-answer) and GetTaskAutofill (the app's
+// /tasks/:taskId/autofill), on purpose: US2-5 promises the two channels
+// offer the SAME data, and a second copy of this query is exactly how they
+// would quietly stop doing so -- one side adding a filter the other never
+// got. Returns (nil, nil) when there is simply no such submission yet.
+func (h *FormHandler) findLastCompletedAnswer(
+	userID uuid.UUID, handler string,
+) (*lastCompletedAnswer, error) {
 	// Raw SQL, not the GORM query builder -- same shape GetTasks already
 	// uses for the identical form.task_form join, proven reliable here.
 	var result struct {
@@ -422,25 +518,21 @@ func (h *FormHandler) GetLastAnswer(c *gin.Context) {
 		ORDER BY r.submitted_at DESC
 		LIMIT 1
 	`
+	if err := h.DB.Raw(query, userID, handler).Scan(&result).Error; err != nil {
+		return nil, err
+	}
 	// GORM's Scan (unlike First) never sets .Error just because zero rows
 	// matched -- it silently leaves the struct at its zero value instead.
 	// Answer == nil is the actual "nothing found" signal here, not err.
-	if err := h.DB.Raw(query, userID, handler).Scan(&result).Error; err != nil || result.Answer == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบประวัติการส่งงานประเภทนี้มาก่อน"})
-		return
+	if result.Answer == nil {
+		return nil, nil
 	}
 
 	var answer map[string]interface{}
 	if err := json.Unmarshal(result.Answer, &answer); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "ข้อมูลคำตอบเดิมเสียหาย"})
-		return
+		return nil, errLastAnswerCorrupt
 	}
-
-	c.JSON(http.StatusOK, LastAnswerResponse{
-		Handler:     handler,
-		SubmittedAt: result.SubmittedAt,
-		Answer:      answer,
-	})
+	return &lastCompletedAnswer{SubmittedAt: result.SubmittedAt, Answer: answer}, nil
 }
 
 // validateSubmission is the actual gate #54 wants: fetch formID's schema
