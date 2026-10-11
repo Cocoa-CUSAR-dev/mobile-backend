@@ -2,6 +2,15 @@ package validation
 
 import "testing"
 
+// registryStaleParents is what form.handler_registry's parent_field column
+// holds today (database V30) -- the set the callers pass in. Before US2-13
+// this was a hard-coded map in the sanitizer itself.
+var registryStaleParents = map[string]bool{
+	"farm_activity_id": true,
+	"harvest_id":       true,
+	"batch_id":         true,
+}
+
 func TestSanitizeAutofillAnswer_DropsTaskIdAndStaleParentFieldsUnconditionally(t *testing.T) {
 	answer := map[string]interface{}{
 		"task_id":          "t-1",
@@ -12,7 +21,7 @@ func TestSanitizeAutofillAnswer_DropsTaskIdAndStaleParentFieldsUnconditionally(t
 	}
 	questions := []Question{{FieldName: "note", InputType: "VARCHAR"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	want := map[string]interface{}{"note": "hello"}
 	assertAnswerEqual(t, got, want)
@@ -22,7 +31,7 @@ func TestSanitizeAutofillAnswer_FreeTextFieldPassesThroughUnchanged(t *testing.T
 	answer := map[string]interface{}{"note": "ปุ๋ยอินทรีย์"}
 	questions := []Question{{FieldName: "note", InputType: "VARCHAR"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, answer)
 }
@@ -34,7 +43,7 @@ func TestSanitizeAutofillAnswer_OptionValueStillOnFormIsKept(t *testing.T) {
 		Choices: []Choice{{ID: "f-1", Name: "label-f-1"}},
 	}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, answer)
 }
@@ -48,7 +57,7 @@ func TestSanitizeAutofillAnswer_StaleOptionValueIsDropped(t *testing.T) {
 		Choices: []Choice{{ID: "current-id", Name: "current"}},
 	}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{})
 }
@@ -57,7 +66,7 @@ func TestSanitizeAutofillAnswer_BooleanValueMatchingSynthesizedChoiceIsKept(t *t
 	answer := map[string]interface{}{"is_quality_damage": "true"}
 	questions := []Question{{FieldName: "is_quality_damage", InputType: "BOOLEAN"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, answer)
 }
@@ -66,7 +75,7 @@ func TestSanitizeAutofillAnswer_BooleanValueNotMatchingIsDropped(t *testing.T) {
 	answer := map[string]interface{}{"is_quality_damage": "maybe"}
 	questions := []Question{{FieldName: "is_quality_damage", InputType: "BOOLEAN"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{})
 }
@@ -79,7 +88,7 @@ func TestSanitizeAutofillAnswer_FieldNotOnCurrentFormPassesThrough(t *testing.T)
 	answer := map[string]interface{}{"retired_field": "x"}
 	questions := []Question{{FieldName: "note", InputType: "VARCHAR"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, answer)
 }
@@ -96,7 +105,7 @@ func TestSanitizeAutofillAnswer_MixedAnswerOnlyDropsWhatItShould(t *testing.T) {
 		{FieldName: "fertilizer_id", InputType: "OPTION", Choices: []Choice{{ID: "current-id", Name: "current"}}},
 	}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{"note": "ok"})
 }
@@ -129,7 +138,7 @@ func TestSanitizeAutofillAnswer_GeodataFieldIsDropped(t *testing.T) {
 		{FieldName: "note", InputType: "VARCHAR"},
 	}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{"note": "ฝนตก"})
 }
@@ -139,7 +148,7 @@ func TestSanitizeAutofillAnswer_GeodataInputTypeIsCaseInsensitive(t *testing.T) 
 	answer := map[string]interface{}{"geo_location": "13.7,100.5"}
 	questions := []Question{{FieldName: "geo_location", InputType: "geodata"}}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{})
 }
@@ -156,7 +165,7 @@ func TestSanitizeAutofillAnswer_UploadFieldIsDroppedEvenThoughItIsVarchar(t *tes
 		{FieldName: "note", InputType: "VARCHAR"},
 	}
 
-	got := SanitizeAutofillAnswer(answer, questions)
+	got := SanitizeAutofillAnswer(answer, questions, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{"note": "ใส่ปุ๋ย"})
 }
@@ -165,7 +174,23 @@ func TestSanitizeAutofillAnswer_UploadIsDroppedEvenWhenNotOnTheCurrentForm(t *te
 	// Rule 4 doesn't depend on the form at all, unlike the GEODATA rule.
 	answer := map[string]interface{}{"upload": "https://storage.example/old.jpg"}
 
-	got := SanitizeAutofillAnswer(answer, nil)
+	got := SanitizeAutofillAnswer(answer, nil, registryStaleParents)
 
 	assertAnswerEqual(t, got, map[string]interface{}{})
+}
+
+func TestSanitizeAutofillAnswer_StaleParentsComeFromTheCaller(t *testing.T) {
+	// A parent field the registry gains later (a brand-new child handler) is
+	// dropped with no change here -- the whole point of moving the list out.
+	answer := map[string]interface{}{"inspection_id": "i-1", "note": "hello"}
+	questions := []Question{{FieldName: "note", InputType: "VARCHAR"}}
+
+	got := SanitizeAutofillAnswer(answer, questions, map[string]bool{"inspection_id": true})
+
+	if _, kept := got["inspection_id"]; kept {
+		t.Fatalf("a registry parent field must be dropped, got %v", got)
+	}
+	if got["note"] != "hello" {
+		t.Fatalf("ordinary fields must pass through, got %v", got)
+	}
 }

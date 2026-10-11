@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -30,30 +33,15 @@ type FormHandler struct {
 // real calls land in ~1-2s.
 var webBackendClient = &http.Client{Timeout: 30 * time.Second}
 
-// standaloneHandlerTables lists the handlers whose destination table has its
-// own generated primary key, so an answer payload can be dissected into an
-// INSERT without needing a parent row from outside the submission.
-var standaloneHandlerTables = map[string]string{
-	"farm_activity":            "agriculture.farm_activity",
-	"processing_record":        "processing.processing_record",
-	"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
-	"harvest":                  "collection.harvest",
-	"batch":                    "processing.batch",
-
-	// The 5 previously-blocked child handlers — each needs a parent ID
-	// (farm_activity_id / harvest_id / batch_id) that isn't in the
-	// submission's own answer fields anywhere else. That's no longer a
-	// dissection problem: the chatbot now resolves the parent ID via a
-	// farm/station-scoped picker (chatbot's src/line/parent_picker.py)
-	// before asking any of the form's real questions, and it arrives here
-	// as a normal answer field, filtered through liveColumns like any
-	// other. See docs/plans/chatbot-child-handler-design.md.
-	"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
-	"farm_activity_chemical":   "agriculture.farm_activity_chemical",
-	"harvest_grade_detail":     "collection.harvest_grade_detail",
-	"fermentation_batch":       "processing.fermentation_batch",
-	"drying_batch":             "processing.drying_batch",
-}
+// Which handler writes into which table used to be a hard-coded
+// standaloneHandlerTables map here, kept in sync by hand with web-backend and
+// the chatbot. US2-13 moved it to form.handler_registry (see
+// handler_registry.go); the 10 handlers that map held are seeded there with
+// exactly the same tables. The 5 child handlers (fertilizer, chemical,
+// harvest_grade_detail, fermentation_batch, drying_batch) still get their
+// parent id from the chatbot's picker, arriving as a normal answer field
+// filtered through liveColumns like any other -- see
+// docs/plans/chatbot-child-handler-design.md.
 
 // columnsCache holds table (schema.table) -> set of live column names.
 // In-process only; cleared on deploy/restart, which is fine since columns
@@ -105,11 +93,11 @@ func filterKnownColumns(answer map[string]interface{}, columns map[string]bool) 
 }
 
 // dissectAnswer inserts the parts of answer that match real destination
-// columns for handler into that handler's table, inside the caller's
-// transaction. Only valid for handlers in standaloneHandlerTables.
-func dissectAnswer(tx *gorm.DB, handler string, answer map[string]interface{}) error {
-	table, ok := standaloneHandlerTables[handler]
-	if !ok {
+// columns into table, inside the caller's transaction. table is the
+// "schema.table" the handler registry resolved (already pattern-checked and
+// confirmed to exist); an empty one is refused before touching the DB.
+func dissectAnswer(tx *gorm.DB, handler, table string, answer map[string]interface{}) error {
+	if table == "" {
 		return fmt.Errorf("handler %q not yet supported for dissection", handler)
 	}
 
@@ -539,17 +527,77 @@ func (h *FormHandler) findLastCompletedAnswer(
 // and run answer past it before letting anything write. Can't fetch a
 // schema? That's a reject too, same as a bad field — we're not writing
 // blind just because Kotlin happened to be down.
+//
+// checkDependencies (US2-13) runs after the per-field checks and adds a
+// field error when a dependent answer doesn't belong to its parent answer
+// (a plot from another farm). nil skips it.
 func validateSubmission(
 	fetchSchema func(uuid.UUID, string) (validation.FormSchema, error),
 	formID uuid.UUID,
 	requestID string,
 	answer map[string]interface{},
+	checkDependencies func(map[string]interface{}) ([]validation.FieldError, error),
 ) ([]validation.FieldError, error) {
 	schema, err := fetchSchema(formID, requestID)
 	if err != nil {
 		return nil, err
 	}
-	return validation.ValidateAnswer(schema, answer), nil
+	fieldErrs := validation.ValidateAnswer(schema, answer)
+	if checkDependencies == nil {
+		return fieldErrs, nil
+	}
+	depErrs, err := checkDependencies(answer)
+	if err != nil {
+		return nil, err
+	}
+	return append(fieldErrs, depErrs...), nil
+}
+
+// insertViolationError turns the two database errors a bad answer can still
+// cause at INSERT time into a farmer-readable field error: a NOT NULL column
+// left empty (23502) and a value that points at a row that doesn't exist
+// (23503). Before US2-13 both surfaced as a 500 carrying the raw Postgres
+// message -- the same shape as a real outage, and unreadable to a farmer.
+// The save-time checks in web-backend now stop most of these at form-build
+// time; this covers forms built before them and anything they can't see.
+// Returns false for any other error, which stays a 500.
+func insertViolationError(err error, labels map[string]string) (validation.FieldError, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return validation.FieldError{}, false
+	}
+	column := pgErr.ColumnName
+	var message string
+	switch pgErr.Code {
+	case "23502":
+		message = "จำเป็นต้องกรอก แต่ไม่ได้รับคำตอบ"
+	case "23503":
+		if m := foreignKeyColumn.FindStringSubmatch(pgErr.Detail); m != nil {
+			column = m[1]
+		}
+		message = "ค่าที่เลือกไม่มีอยู่ในระบบแล้ว กรุณาเลือกใหม่"
+	default:
+		return validation.FieldError{}, false
+	}
+	if label := labels[column]; label != "" {
+		message = fmt.Sprintf("'%s' %s", label, message)
+	}
+	return validation.FieldError{FieldName: column, Message: message}, true
+}
+
+// Postgres' FK violation detail: `Key (farm_id)=(...) is not present in table "farm".`
+var foreignKeyColumn = regexp.MustCompile(`Key \(([a-z_][a-z0-9_]*)\)=`)
+
+// questionLabels maps field_name -> the question's label, for wording a
+// field error the way the farmer saw the question.
+func questionLabels(schema validation.FormSchema) map[string]string {
+	labels := map[string]string{}
+	for _, q := range activeQuestions(schema) {
+		if q.FieldName != "" && labels[q.FieldName] == "" {
+			labels[q.FieldName] = q.Label
+		}
+	}
+	return labels
 }
 
 // submitAnswerForUser is the shared dissection path both SubmitTask and
@@ -572,14 +620,24 @@ func (h *FormHandler) submitAnswerForUser(
 		return
 	}
 
-	if _, supported := standaloneHandlerTables[taskForm.Handler]; !supported {
+	registry, err := currentHandlerRegistry(h.DB)
+	if err != nil {
+		slog.Error("could not read the handler registry", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถอ่านรายการแบบฟอร์มที่รองรับได้ กรุณาลองใหม่อีกครั้ง"})
+		return
+	}
+	table, supported := registry.table(taskForm.Handler)
+	if !supported {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": fmt.Sprintf("handler %q ยังไม่รองรับการบันทึกข้อมูลอัตโนมัติ", taskForm.Handler)})
 		return
 	}
 
 	// Gate: nothing below this point runs until the answer passes. See
 	// validateSubmission above.
-	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, requestid.FromContext(c), answer)
+	fieldErrs, err := validateSubmission(
+		fetchFormSchema, taskForm.FormID, requestid.FromContext(c), answer,
+		dependencyChecker(h.DB, registry.dependencies),
+	)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
 		return
@@ -612,13 +670,23 @@ func (h *FormHandler) submitAnswerForUser(
 			return err
 		}
 
-		if err := dissectAnswer(tx, taskForm.Handler, answer); err != nil {
+		if err := dissectAnswer(tx, taskForm.Handler, table, answer); err != nil {
 			return err
 		}
 		return nil
 	})
 
 	if err != nil {
+		// The schema is cached (formSchemaCache), so wording the error with
+		// the farmer's own question labels costs no extra round trip.
+		labels := map[string]string{}
+		if schema, schemaErr := fetchFormSchema(taskForm.FormID, requestid.FromContext(c)); schemaErr == nil {
+			labels = questionLabels(schema)
+		}
+		if fieldErr, ok := insertViolationError(err, labels); ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ข้อมูลไม่ผ่านการตรวจสอบ", "details": []string{fieldErr.Error()}})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถส่งงานได้: " + err.Error()})
 		return
 	}
@@ -762,8 +830,20 @@ func (h *FormHandler) UpdateTaskResponse(c *gin.Context) {
 		return
 	}
 
+	// Same dependency rule as a new submission (a plot must belong to the
+	// chosen farm) -- an edit is the same answer data, just rewritten.
+	registry, err := currentHandlerRegistry(h.DB)
+	if err != nil {
+		slog.Error("could not read the handler registry", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถอ่านรายการแบบฟอร์มที่รองรับได้ กรุณาลองใหม่อีกครั้ง"})
+		return
+	}
+
 	// Gate: nothing below this point runs until the answer passes.
-	fieldErrs, err := validateSubmission(fetchFormSchema, taskForm.FormID, requestid.FromContext(c), req.Answer)
+	fieldErrs, err := validateSubmission(
+		fetchFormSchema, taskForm.FormID, requestid.FromContext(c), req.Answer,
+		dependencyChecker(h.DB, registry.dependencies),
+	)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลฟอร์มได้: " + err.Error()})
 		return

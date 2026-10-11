@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -11,22 +12,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// parentPickerHandlers are the 5 child handlers whose submission needs a
-// parent row (farm activity / harvest / batch) picked first. The chatbot
-// never offers autofill for these (chatbot's src/line/parent_picker.py,
-// _PARENT_KIND_BY_HANDLER -- same 5 names), and the app mustn't either: the
-// whole point of US2-5 is that the two channels offer the same thing. Reusing
-// a stale parent id is also the data-integrity bug the sanitizer's
-// staleParentFields rule exists for, so there is very little left worth
-// offering on these forms anyway. If the team ever wants autofill here,
-// change both channels together.
-var parentPickerHandlers = map[string]bool{
-	"farm_activity_fertilizer": true,
-	"farm_activity_chemical":   true,
-	"harvest_grade_detail":     true,
-	"fermentation_batch":       true,
-	"drying_batch":             true,
-}
+// Child handlers -- those whose submission needs a parent row (farm
+// activity / harvest / batch) picked first -- get no autofill offer. The
+// chatbot never offers one for them either, and the whole point of US2-5 is
+// that the two channels offer the same thing. Reusing a stale parent id is
+// also the data-integrity bug the sanitizer's stale-parent rule exists for,
+// so there is very little left worth offering on these forms anyway. If the
+// team ever wants autofill here, change both channels together.
+//
+// The list used to be hard-coded here (parentPickerHandlers, the same 5 names
+// as the chatbot's _PARENT_KIND_BY_HANDLER). Since US2-13 it is every registry
+// row with a parent_handler (handlerRegistry.childHandlers), so a child
+// handler added by migration is covered with no code change.
 
 // TaskAutofillResponse is the 200 body of GET /tasks/:taskId/autofill --
 // already sanitized, so the app never sees a value it shouldn't offer.
@@ -83,8 +80,15 @@ func (h *FormHandler) GetTaskAutofill(c *gin.Context) {
 		return
 	}
 
+	registry, err := currentHandlerRegistry(h.DB)
+	if err != nil {
+		slog.Error("could not read the handler registry", "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "ไม่สามารถอ่านรายการแบบฟอร์มที่รองรับได้"})
+		return
+	}
+
 	// --- Offer gate: exactly the cases the chatbot doesn't offer in. ---
-	if parentPickerHandlers[taskForm.Handler] {
+	if registry.childHandlers[taskForm.Handler] {
 		c.Status(http.StatusNoContent)
 		return
 	}
@@ -128,7 +132,7 @@ func (h *FormHandler) GetTaskAutofill(c *gin.Context) {
 		return
 	}
 
-	sanitized := validation.SanitizeAutofillAnswer(last.Answer, activeQuestions(schema))
+	sanitized := validation.SanitizeAutofillAnswer(last.Answer, activeQuestions(schema), registry.staleParents)
 	if len(sanitized) == 0 {
 		// Everything it had was stale, a parent id, a location or a photo.
 		// An offer of nothing is worse than no offer.

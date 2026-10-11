@@ -29,7 +29,7 @@ func TestValidateSubmission_PassesCleanAnswerThrough(t *testing.T) {
 		return schema, nil
 	}
 
-	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"note": "ok"})
+	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"note": "ok"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestValidateSubmission_RejectsBadAnswerWithoutCallingDB(t *testing.T) {
 	dbWasCalled := false
 	fakeDBWrite := func() { dbWasCalled = true }
 
-	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"quantity_kg": "not-a-number"})
+	errs, err := validateSubmission(fetchSchema, formID, "", map[string]interface{}{"quantity_kg": "not-a-number"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestValidateSubmission_SchemaFetchFailureFailsClosed(t *testing.T) {
 		return validation.FormSchema{}, errors.New("upstream unavailable")
 	}
 
-	errs, err := validateSubmission(fetchSchema, uuid.New(), "", map[string]interface{}{"note": "ok"})
+	errs, err := validateSubmission(fetchSchema, uuid.New(), "", map[string]interface{}{"note": "ok"}, nil)
 	if err == nil {
 		t.Fatal("want an error when the schema fetch fails, got nil")
 	}
