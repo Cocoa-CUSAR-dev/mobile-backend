@@ -55,10 +55,15 @@ func TestAutofillPipeline_LastAnswerThroughSanitize_MatchesForEveryCaller(t *tes
 	}
 	seedResponse(t, db, user.UserID, taskID, "COMPLETED", time.Now().UTC(), rawAnswer)
 
+	// The registry's current parent_field set (database V30); this test's
+	// schema doesn't carry form.handler_registry itself.
+	defer setHandlerRegistryForTest(&handlerRegistry{
+		staleParents: map[string]bool{"farm_activity_id": true, "harvest_id": true, "batch_id": true},
+	})()
 	h := &FormHandler{DB: db}
 	r := gin.New()
 	r.GET("/service/tasks/last-answer", h.GetLastAnswer)
-	r.POST("/service/autofill/sanitize", SanitizeAutofill)
+	r.POST("/service/autofill/sanitize", h.SanitizeAutofill)
 
 	// Step 1: the raw last answer, exactly as GetLastAnswer serves it to
 	// any caller -- chat and a future static form would both start here.
@@ -239,6 +244,7 @@ func offersFromBothChannels(
 	newTask := seedTaskFormFor(t, db, handler, false)
 	seedResponse(t, db, user.UserID, pastTask, "COMPLETED", time.Now().UTC(), rawAnswer)
 
+	defer setHandlerRegistryForTest(v30Registry())()
 	h := &FormHandler{DB: db}
 	questions := parityQuestions(t)
 
@@ -246,10 +252,10 @@ func offersFromBothChannels(
 	// parent-picker handler (router.py resolves the parent picker first and
 	// skips the offer), so that case is "no offer" by construction.
 	chat = map[string]interface{}{}
-	if !parentPickerHandlers[handler] {
+	if !v30Registry().childHandlers[handler] {
 		r := gin.New()
 		r.GET("/service/tasks/last-answer", h.GetLastAnswer)
-		r.POST("/service/autofill/sanitize", SanitizeAutofill)
+		r.POST("/service/autofill/sanitize", h.SanitizeAutofill)
 
 		lastW := httptest.NewRecorder()
 		r.ServeHTTP(lastW, httptest.NewRequest(http.MethodGet,
@@ -355,20 +361,7 @@ func TestAutofillParity_ParentPickerHandlerOffersNothingInEither(t *testing.T) {
 	assertSameOffer(t, chat, app, map[string]interface{}{})
 }
 
-func TestAutofillParity_ParentPickerHandlerListMatchesTheChatbots(t *testing.T) {
-	// chatbot src/line/parent_picker.py's _PARENT_KIND_BY_HANDLER keys. The
-	// two lists live in different repos, so this pins the Go copy down; if
-	// the chatbot gains or loses a parent-picker handler, both must change.
-	want := []string{
-		"farm_activity_fertilizer", "farm_activity_chemical",
-		"harvest_grade_detail", "fermentation_batch", "drying_batch",
-	}
-	if len(parentPickerHandlers) != len(want) {
-		t.Fatalf("want %d parent-picker handlers, got %d: %v", len(want), len(parentPickerHandlers), parentPickerHandlers)
-	}
-	for _, handler := range want {
-		if !parentPickerHandlers[handler] {
-			t.Fatalf("parentPickerHandlers is missing %q", handler)
-		}
-	}
-}
+// The child-handler list itself (formerly parentPickerHandlers, pinned here
+// against the chatbot's copy) now comes from form.handler_registry; its
+// parity with the old lists is checked against a real DB in
+// handler_registry_db_test.go.

@@ -16,18 +16,6 @@ var nonAnswerFields = map[string]bool{
 	"task_id": true,
 }
 
-// staleParentFields are the previously-blocked handlers' parent-picker
-// fields (see database's V13 migration / chatbot's src/line/parent_picker.py).
-// Reusing one blind would silently attach a new submission to an OLD parent
-// row -- a different farm activity/harvest/batch than this submission is
-// actually about -- a data-integrity bug invisible from either UI, since
-// nothing displays the raw id. Always dropped, regardless of form shape.
-var staleParentFields = map[string]bool{
-	"farm_activity_id": true,
-	"harvest_id":       true,
-	"batch_id":         true,
-}
-
 // uploadFieldName is the form field a photo/file attachment is stored under
 // (Kotlin's handler-field list exposes it as a plain VARCHAR named "upload",
 // which is why the chatbot already refuses to ask it). Last time's photo is
@@ -50,7 +38,14 @@ var booleanChoices = []Choice{{ID: "true", Name: "ใช่"}, {ID: "false", Nam
 // GET /tasks/:taskId/autofill -- so a rule added here reaches both at once
 // (US2-5: "offers the same data and behaves the same way in both"). Rules:
 //
-//  1. task_id and the 3 stale parent-id fields are dropped outright, always.
+//  1. task_id and every stale parent-id field are dropped outright, always.
+//     staleParents is the set of child handlers' parent-picker fields
+//     (farm_activity_id / harvest_id / batch_id today), which the caller
+//     reads from form.handler_registry's parent_field (US2-13) -- this used
+//     to be a hard-coded copy kept in sync with the chatbot by hand. Reusing
+//     one blind would silently attach a new submission to an OLD parent row:
+//     a different farm activity/harvest/batch than this submission is about,
+//     invisible from either UI since nothing displays the raw id.
 //  2. An OPTION/BOOLEAN field whose stored value doesn't match any of the
 //     CURRENT form's real choices for that field is dropped -- a
 //     farm/fertilizer/etc. that's since been deleted or renamed shouldn't
@@ -62,7 +57,7 @@ var booleanChoices = []Choice{{ID: "true", Name: "ใช่"}, {ID: "false", Nam
 //  5. Every other field (free text, or a still-resolving OPTION value)
 //     passes through unchanged.
 func SanitizeAutofillAnswer(
-	answer map[string]interface{}, questions []Question,
+	answer map[string]interface{}, questions []Question, staleParents map[string]bool,
 ) map[string]interface{} {
 	choicesByField := map[string][]Choice{}
 	geodataFields := map[string]bool{}
@@ -79,7 +74,7 @@ func SanitizeAutofillAnswer(
 
 	sanitized := map[string]interface{}{}
 	for field, value := range answer {
-		if nonAnswerFields[field] || staleParentFields[field] {
+		if nonAnswerFields[field] || staleParents[field] {
 			continue
 		}
 		if geodataFields[field] || field == uploadFieldName {

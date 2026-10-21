@@ -138,6 +138,12 @@ func openIntegrationTestDB(t *testing.T) *gorm.DB {
 		sqlDB, _ := db.DB()
 		_ = sqlDB.Close()
 	})
+	// US2-13: handlers read form.handler_registry, which most of these test
+	// schemas don't carry. Every DB test gets the registry exactly as
+	// database V30 seeds it (v30Registry) through the cache, independent of
+	// test order. The registry's own DB tests call loadHandlerRegistryFromDB
+	// directly, so they still read the real table.
+	t.Cleanup(setHandlerRegistryForTest(v30Registry()))
 	return db
 }
 

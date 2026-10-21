@@ -445,39 +445,29 @@ func TestFilterKnownColumns_EmptyWhenNoMatch(t *testing.T) {
 	}
 }
 
-func TestStandaloneHandlerTables_MatchesVerifiedHandlers(t *testing.T) {
-	// Guards against typos/drift from the verified table in
-	// task-dissection-design.md / chatbot-child-handler-design.md — all 10
-	// of these have their own generated PK (the original 5) or now get
-	// their parent ID resolved upstream by the chatbot's picker (the other
-	// 5), so both are safe to dissect generically.
-	want := map[string]string{
-		"farm_activity":            "agriculture.farm_activity",
-		"processing_record":        "processing.processing_record",
-		"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
-		"harvest":                  "collection.harvest",
-		"batch":                    "processing.batch",
-		"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
-		"farm_activity_chemical":   "agriculture.farm_activity_chemical",
-		"harvest_grade_detail":     "collection.harvest_grade_detail",
-		"fermentation_batch":       "processing.fermentation_batch",
-		"drying_batch":             "processing.drying_batch",
-	}
-	if len(standaloneHandlerTables) != len(want) {
-		t.Fatalf("want %d standalone handlers, got %d", len(want), len(standaloneHandlerTables))
-	}
-	for handler, table := range want {
-		if got := standaloneHandlerTables[handler]; got != table {
-			t.Errorf("handler %q: want table %q, got %q", handler, table, got)
-		}
-	}
+// legacyHandlerTables is the standaloneHandlerTables map this service
+// hard-coded before US2-13 moved it into form.handler_registry. Kept here,
+// verbatim, as the parity reference: every one of these must still resolve
+// to exactly the same table through the registry (checked against a real DB
+// in handler_registry_db_test.go).
+var legacyHandlerTables = map[string]string{
+	"farm_activity":            "agriculture.farm_activity",
+	"processing_record":        "processing.processing_record",
+	"farm_pest_disease_record": "agriculture.farm_pest_disease_record",
+	"harvest":                  "collection.harvest",
+	"batch":                    "processing.batch",
+	"farm_activity_fertilizer": "agriculture.farm_activity_fertilizer",
+	"farm_activity_chemical":   "agriculture.farm_activity_chemical",
+	"harvest_grade_detail":     "collection.harvest_grade_detail",
+	"fermentation_batch":       "processing.fermentation_batch",
+	"drying_batch":             "processing.drying_batch",
 }
 
 func TestDissectAnswer_UnsupportedHandlerReturnsError(t *testing.T) {
-	// A handler name that genuinely isn't in the map (not one of the 10
-	// real ones above) — dissectAnswer must reject it before ever touching
-	// the DB, so this must not need a real *gorm.DB to pass.
-	err := dissectAnswer(nil, "not_a_real_handler", map[string]interface{}{"batch_id": "b1"})
+	// No table resolved (a handler the registry doesn't know) -- dissectAnswer
+	// must reject it before ever touching the DB, so this must not need a
+	// real *gorm.DB to pass.
+	err := dissectAnswer(nil, "not_a_real_handler", "", map[string]interface{}{"batch_id": "b1"})
 	if err == nil {
 		t.Fatal("want error for unsupported handler, got nil")
 	}

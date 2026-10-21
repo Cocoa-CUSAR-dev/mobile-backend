@@ -18,8 +18,12 @@ import (
 
 func TestSanitizeAutofill_MatchesChatbotsRealPayloadShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	defer setHandlerRegistryForTest(&handlerRegistry{
+		staleParents: map[string]bool{"farm_activity_id": true, "harvest_id": true, "batch_id": true},
+	})()
+	h := &FormHandler{}
 	r := gin.New()
-	r.POST("/service/autofill/sanitize", SanitizeAutofill)
+	r.POST("/service/autofill/sanitize", h.SanitizeAutofill)
 
 	body := `{
 		"answer": {
@@ -58,8 +62,12 @@ func TestSanitizeAutofill_MatchesChatbotsRealPayloadShape(t *testing.T) {
 
 func TestSanitizeAutofill_InvalidJSONReturns400(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	defer setHandlerRegistryForTest(&handlerRegistry{
+		staleParents: map[string]bool{"farm_activity_id": true, "harvest_id": true, "batch_id": true},
+	})()
+	h := &FormHandler{}
 	r := gin.New()
-	r.POST("/service/autofill/sanitize", SanitizeAutofill)
+	r.POST("/service/autofill/sanitize", h.SanitizeAutofill)
 
 	req := httptest.NewRequest(http.MethodPost, "/service/autofill/sanitize", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -78,8 +86,12 @@ func TestSanitizeAutofill_EmptyAnswerReturnsEmptyObjectNotNull(t *testing.T) {
 	// error (see src/tasks/client.py), so a nil map serializing to `null`
 	// would incorrectly look like a broken response.
 	gin.SetMode(gin.TestMode)
+	defer setHandlerRegistryForTest(&handlerRegistry{
+		staleParents: map[string]bool{"farm_activity_id": true, "harvest_id": true, "batch_id": true},
+	})()
+	h := &FormHandler{}
 	r := gin.New()
-	r.POST("/service/autofill/sanitize", SanitizeAutofill)
+	r.POST("/service/autofill/sanitize", h.SanitizeAutofill)
 
 	body := `{"answer": {"task_id": "t-1"}, "questions": []}`
 	req := httptest.NewRequest(http.MethodPost, "/service/autofill/sanitize", strings.NewReader(body))
