@@ -224,11 +224,24 @@ func queryTasksForUser(
 			NULLIF(?, '')::date IS NULL
 			OR DATE(t.open_at) = NULLIF(?, '')::date
 		)
+		-- US4-4 (docs-and-plan#236): a task that has form.assignment rows is
+		-- for those people only; a task with none is for everyone, exactly as
+		-- before assignments were ever written. That second half is on
+		-- purpose: every task that existed before recurring tasks keeps
+		-- showing, with no backfill. The chatbot's list_pending_tasks applies
+		-- the same rule -- keep the two in step.
+		AND (
+			NOT EXISTS (SELECT 1 FROM form.assignment a WHERE a.task_id = t.task_id)
+			OR EXISTS (
+				SELECT 1 FROM form.assignment a
+				WHERE a.task_id = t.task_id AND a.user_id = ?
+			)
+		)
 		ORDER BY t.open_at DESC, t.task_id
 		LIMIT ? OFFSET ?
 	`
 
-	err := db.Raw(query, userID, date, date, size, page*size).Scan(&tasks).Error
+	err := db.Raw(query, userID, date, date, userID, size, page*size).Scan(&tasks).Error
 	return tasks, err
 }
 

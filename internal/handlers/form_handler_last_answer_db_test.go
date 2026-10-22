@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS form.task_form (
 -- status computation (queryTasksForUser) does -- see form_handler_tasks_for_user_db_test.go.
 ALTER TABLE form.task_form ADD COLUMN IF NOT EXISTS is_multiple_submit boolean DEFAULT false;
 
+-- US4-4: who a task is assigned to. queryTasksForUser only asks whether a
+-- task has any rows and whether one of them is the caller's.
+CREATE TABLE IF NOT EXISTS form.assignment (
+	assignment_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	task_id uuid NOT NULL REFERENCES form.task(task_id),
+	user_id uuid NOT NULL REFERENCES auth.user_account(user_id),
+	status character varying NOT NULL DEFAULT 'NOT_STARTED',
+	UNIQUE (task_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS form.response (
 	response_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	task_log_id uuid NOT NULL,
@@ -68,7 +78,7 @@ func openLastAnswerTestDB(t *testing.T) *gorm.DB {
 	if err := db.Exec(formResponseTestSchemaDDL).Error; err != nil {
 		t.Fatalf("apply form.* test schema: %v", err)
 	}
-	if err := db.Exec("TRUNCATE form.response, form.task_form, form.task CASCADE").Error; err != nil {
+	if err := db.Exec("TRUNCATE form.assignment, form.response, form.task_form, form.task CASCADE").Error; err != nil {
 		t.Fatalf("truncate form.* test tables: %v", err)
 	}
 	return db
