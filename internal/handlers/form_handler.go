@@ -194,15 +194,20 @@ func queryTasksForUser(
 			-- The multi-submit arm is written as its own complete ladder so
 			-- the single-submit arm below keeps its original precedence
 			-- exactly (COMPLETED wins over OVERDUE, as it always has).
+			-- docs-and-plan#254: close_at is Bangkok wall-clock (the create-form
+			-- page saves the researcher's datetime-local value as typed), so
+			-- "past close" is asked in Bangkok time. A bare NOW() would read
+			-- close_at as UTC (Neon's session zone) and flag OVERDUE ~7h late.
+			-- The chatbot's reminder job uses the same Bangkok clock.
 			CASE
 				WHEN COALESCE(tf.is_multiple_submit, FALSE) THEN
 					CASE
-						WHEN NOW() > t.close_at THEN 'OVERDUE'
+						WHEN (NOW() AT TIME ZONE 'Asia/Bangkok') > t.close_at THEN 'OVERDUE'
 						WHEN has_response.ok THEN 'IN_PROGRESS'
 						ELSE 'NOT_STARTED'
 					END
 				WHEN has_response.ok THEN 'COMPLETED'
-				WHEN NOW() > t.close_at THEN 'OVERDUE'
+				WHEN (NOW() AT TIME ZONE 'Asia/Bangkok') > t.close_at THEN 'OVERDUE'
 				ELSE 'NOT_STARTED'
 			END AS status
 		FROM form.task t

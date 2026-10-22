@@ -157,3 +157,59 @@ func TestGetTasksForUser_StatusMatchesEachTaskShape(t *testing.T) {
 		t.Errorf("task_form_id: want %s, got %s", notStartedFormID, gotFormID)
 	}
 }
+
+// docs-and-plan#254: form.task.close_at is Bangkok wall-clock (web-app sends
+// the researcher's datetime-local value as typed), so "is it past close" must
+// be asked in Bangkok time. Comparing with a bare NOW() reads close_at as UTC
+// and kept a closed task NOT_STARTED for about seven hours.
+func TestGetTasksForUser_OverdueFollowsBangkokTime(t *testing.T) {
+	db := openLastAnswerTestDB(t)
+	user := seedUserAccount(t, db, "farmer_bangkok_clock", "secret123")
+
+	// A fixed +07:00 zone rather than LoadLocation, so the test needs no
+	// tzdata on the machine running it. Thailand has no daylight saving.
+	bangkok := time.FixedZone("ICT", 7*60*60)
+	nowInBangkok := time.Now().In(bangkok)
+	// Stored exactly as written, with no zone, the way the create-form page
+	// saves it.
+	wallClock := func(t time.Time) string { return t.Format("2006-01-02 15:04:05") }
+
+	seed := func(name string, closeAt time.Time, multiSubmit bool) uuid.UUID {
+		taskID, _ := seedTaskFormForUserTest(t, db, name, time.Time{}, multiSubmit)
+		if err := db.Exec(
+			"UPDATE form.task SET close_at = CAST(? AS timestamp) WHERE task_id = ?",
+			wallClock(closeAt), taskID,
+		).Error; err != nil {
+			t.Fatalf("set close_at: %v", err)
+		}
+		return taskID
+	}
+
+	// Closed two hours ago in Bangkok -- but still five hours "ahead" if
+	// close_at were read as UTC, which is exactly the old bug.
+	closedID := seed("closed_two_hours_ago", nowInBangkok.Add(-2*time.Hour), false)
+	closedMultiID := seed("closed_multi_submit", nowInBangkok.Add(-2*time.Hour), true)
+	// Closes later today in Bangkok: not overdue either way.
+	openID := seed("closes_later_today", nowInBangkok.Add(2*time.Hour), false)
+
+	h := &FormHandler{DB: db}
+	r := gin.New()
+	r.GET("/service/tasks", h.GetTasksForUser)
+	req := httptest.NewRequest(http.MethodGet, "/service/tasks?user_id="+user.UserID.String()+"&page_size=50", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	statuses := taskStatuses(t, w)
+	for taskID, want := range map[string]string{
+		closedID.String():      "OVERDUE",
+		closedMultiID.String(): "OVERDUE",
+		openID.String():        "NOT_STARTED",
+	} {
+		if got := statuses[taskID]; got != want {
+			t.Errorf("task %s: want %s, got %q", taskID, want, got)
+		}
+	}
+}
